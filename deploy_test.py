@@ -1,4 +1,3 @@
-import argparse
 import sys
 from pathlib import Path
 
@@ -11,44 +10,51 @@ if str(SRC_PATH) not in sys.path:
 from k8slib.deployer import K8sDeployer
 from k8slib.exceptions import DeploymentError
 
+# Set to the path of your kubeconfig file, or None to use ~/.kube/config
+KUBECONFIG_PATH = "./k3s.yaml"
+# Set to a specific context name, or None to use the current context
+CONTEXT = "default"
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Submit a Kubernetes manifest using k8s-lifecycle deployer.")
-    parser.add_argument("manifest", help="Path to manifest YAML file")
-    parser.add_argument("--namespace", default=None, help="Override namespace for namespaced resources")
-    parser.add_argument("--kubeconfig", default=None, help="Path to kubeconfig file")
-    parser.add_argument("--context", default=None, help="Kubeconfig context name")
-    return parser.parse_args()
+MANIFESTS = [
+    "./manifest/custom-metric-config.yaml",
+    "./manifest/emsconfig.yaml",
+    "./manifest/ems+netdata-k3s_parametric.yaml",
+    "./manifest/stomp-listener.yaml",
+    "./manifest/python_manifest.yaml",
+]
 
 
 def main() -> int:
-    args = parse_args()
+    deployer = K8sDeployer(kubeconfig_path=KUBECONFIG_PATH, context=CONTEXT)
+    overall_ok = True
 
-    deployer = K8sDeployer(
-        kubeconfig_path=args.kubeconfig,
-        context=args.context,
-    )
+    for manifest_path in MANIFESTS:
+        print(f"\nDeploying {manifest_path} ...")
+        try:
+            deployed = deployer.deploy_manifest(manifest_path)
+        except DeploymentError as error:
+            print(f"  ERROR: {error}")
+            overall_ok = False
+            continue
 
-    try:
-        deployed = deployer.deploy_manifest(args.manifest, namespace=args.namespace)
-    except DeploymentError as error:
-        print(f"Deployment failed: {error}")
-        return 1
+        if not deployed:
+            print("  No valid Kubernetes resources found in the manifest.")
+            continue
 
-    if not deployed:
-        print("No valid Kubernetes resources found in the manifest.")
+        print("  Created or patched resources:")
+        for resource in deployed:
+            namespace = resource.get("namespace") or "<cluster-scoped>"
+            print(
+                f"  - {resource['kind']}/{resource['name']} "
+                f"(apiVersion={resource['apiVersion']}, namespace={namespace})"
+            )
+
+    if overall_ok:
+        print("\nAll manifests deployed successfully.")
         return 0
-
-    print("Deployment submitted successfully.")
-    print("Created or patched resources:")
-    for resource in deployed:
-        namespace = resource.get("namespace") or "<cluster-scoped>"
-        print(
-            f"- {resource['kind']}/{resource['name']} "
-            f"(apiVersion={resource['apiVersion']}, namespace={namespace})"
-        )
-
-    return 0
+    else:
+        print("\nOne or more manifests failed to deploy.")
+        return 1
 
 
 if __name__ == "__main__":
