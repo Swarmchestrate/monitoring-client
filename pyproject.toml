@@ -1,0 +1,37 @@
+[project]
+name = "k8s-lifecycle"
+version = "0.1.0"
+description = "Kubernetes manifest deploy, readiness monitoring, threaded exporter integration, and cleanup tooling."
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+  {name = "Márk Emődi", email = "mark.emodi@sztaki.hun-ren.hu"}
+]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent"
+]
+dependencies = [
+  "kubernetes>=26.0.0",
+  "pyyaml>=6.0",
+]
+
+[build-system]
+requires = ["hatchling>=1.16"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-urls = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/k8slib"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "src/k8slib",
+  "README.md",
+  "LICENSE",
+  "pyproject.toml",
+]
