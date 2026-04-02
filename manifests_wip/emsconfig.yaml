@@ -1,0 +1,8 @@
+apiVersion: v1
+data:
+  SAT_FILE: tosca_metrics_ze_custom.yaml
+  OPTIMUSDB_URL: http://193.225.250.240/optimusdb1/swarmkb
+kind: ConfigMap
+metadata:
+  name: emsconfig
+  namespace: default

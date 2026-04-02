@@ -1,6 +1,6 @@
 import time
 
-from k8slib.threader import MonitoringThreadManager
+from swchmonclient.threader import MonitoringThreadManager
 
 
 def counter_worker(stop_event, max_count=10000):

@@ -1,0 +1,78 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: custom-metric-config
+data:
+  custom-metric-exporter.py: |
+  
+    import stomp
+    import json
+    import time
+    
+    class ActiveMQPublisher:
+        """
+        Publishes events (dictionaries) to a an ActiveMQ broker via STOMP.
+        """
+    #    def __init__(self, host='localhost', port=61613, queue='/queue/alerts', username=None, password=None):
+        def __init__(self, host='emsserver-ems-server', port=61610, queue='/topic/alerts', username="aaa", password="111"):
+            self.host = host
+            self.port = port
+            self.queue = queue
+            self.username = username
+            self.password = password
+            self.conn = stomp.Connection12([(self.host, self.port)])
+            try:
+              self._connect()
+            except Exception as e: 
+              sleep(1)
+              self._connect()
+
+        def _connect(self):
+            """Establish a connection to the broker."""
+
+            #self.conn.set_listener('', stomp.PrintingListener())  # optional: prints connection events
+            if self.username and self.password:
+              try:
+                self.conn.connect(login=self.username, passcode=self.password, wait=True)
+              except Exception as e: 
+                sleep(1)
+                self.conn.connect(login=self.username, passcode=self.password, wait=True)
+            else:
+              try:
+                self.conn.connect(wait=True)
+              except Exception as e: 
+                sleep(1)       
+                self.conn.connect(wait=True)
+            print(f"Connected to ActiveMQ at {self.host}:{self.port}, publishing to {self.queue}")
+
+        def publish(self, flat_entry):
+            """
+            Publishes a flat_entry dictionary as a JSON string to the queue.
+            """
+            try:
+                message = json.dumps(flat_entry)
+                self.conn.send(
+                    destination=self.queue,
+                    body=message,
+                    headers={'type':'textMessage', 'amq-msg-type':'text'},  # ensures broker treats as text
+                    persistent='true')
+                print("Published message:", message)
+            except Exception as e:
+                print("Error publishing message:", e)
+
+                # Optionally reconnect on failure
+                time.sleep(1)
+                self._connect()
+
+        def disconnect(self):
+            """Disconnect from broker."""
+            self.conn.disconnect()
+
+    from time import sleep
+    a = ActiveMQPublisher(queue="/topic/mysample_metric",)
+    def get_message():
+      message = {"metricValue":93.550845500000003, "timestamp":int(time.time())*1000}
+      return message
+    for i in range (10000):
+      a.publish(get_message())
+      sleep(1)

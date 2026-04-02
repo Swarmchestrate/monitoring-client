@@ -8,12 +8,12 @@ SRC_PATH = REPO_ROOT / "src"
 if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
-from k8slib.deployer import K8sDeployer
-from k8slib.exceptions import DeploymentError
+from swchmonclient.deployer import K8sDeployer
+from swchmonclient.exceptions import DeploymentError
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Submit a Kubernetes manifest using k8s-lifecycle deployer.")
+    parser = argparse.ArgumentParser(description="Submit a Kubernetes manifest using swchmonclient deployer.")
     parser.add_argument("manifest", help="Path to manifest YAML file")
     parser.add_argument("--namespace", default=None, help="Override namespace for namespaced resources")
     parser.add_argument("--kubeconfig", default=None, help="Path to kubeconfig file")

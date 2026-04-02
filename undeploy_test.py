@@ -7,8 +7,8 @@ SRC_PATH = REPO_ROOT / "src"
 if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
-from k8slib.deployer import K8sDeployer
-from k8slib.exceptions import DeploymentError
+from swchmonclient.deployer import K8sDeployer
+from swchmonclient.exceptions import DeploymentError
 
 # Set to the path of your kubeconfig file, or None to use ~/.kube/config
 KUBECONFIG_PATH = "./k3s.yaml"

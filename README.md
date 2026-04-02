@@ -1,4 +1,4 @@
-# k8s-lifecycle
+# swchmonclient
 
 A small Python library that manages a Kubernetes application lifecycle:
 
@@ -11,13 +11,13 @@ A small Python library that manages a Kubernetes application lifecycle:
 ## Install
 
 ```bash
-uv add k8s-lifecycle
+uv add swchmonclient
 ```
 
 ## Quick Example
 
 ```python
-from k8slib import K8sDeployer, K8sMonitor, MonitoringThreadManager
+from swchmonclient import K8sDeployer, K8sMonitor, MonitoringThreadManager
 
 # 1) Deploy
 resources = K8sDeployer().deploy_manifest("./manifests/app.yaml", namespace="default")

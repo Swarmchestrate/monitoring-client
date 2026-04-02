@@ -1,5 +1,5 @@
 [project]
-name = "k8s-lifecycle"
+name = "swchmonclient"
 version = "0.1.0"
 description = "Kubernetes manifest deploy, readiness monitoring, threaded exporter integration, and cleanup tooling."
 readme = "README.md"
@@ -26,11 +26,11 @@ build-backend = "hatchling.build"
 allow-direct-urls = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/k8slib"]
+packages = ["src/swchmonclient"]
 
 [tool.hatch.build.targets.sdist]
 include = [
-  "src/k8slib",
+  "src/swchmonclient",
   "README.md",
   "LICENSE",
   "pyproject.toml",
