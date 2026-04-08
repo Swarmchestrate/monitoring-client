@@ -1,5 +1,9 @@
 import sys
+import os
+import tempfile
 from pathlib import Path
+
+from jinja2 import Environment, FileSystemLoader
 
 # Allow running this script directly from the repo root without installing the package.
 REPO_ROOT = Path(__file__).resolve().parent
@@ -15,6 +19,10 @@ KUBECONFIG_PATH = "./k3s.yaml"
 # Set to a specific context name, or None to use the current context
 CONTEXT = "default"
 
+# Default values for the emsconfig template
+EMS_SAT_FILE = "tosca_metrics_ze_custom.yaml"
+EMS_OPTIMUSDB_URL = "http://193.225.250.240/optimusdb1/swarmkb"
+
 MANIFESTS = [
     "./manifest/custom-metric-config.yaml",
     "./manifest/emsconfig.yaml",
@@ -24,30 +32,56 @@ MANIFESTS = [
 ]
 
 
+def render_emsconfig(template_path: str, sat_file: str = EMS_SAT_FILE, optimusdb_url: str = EMS_OPTIMUSDB_URL) -> str:
+    """Render the emsconfig Jinja2 template and return a path to a temporary file."""
+    template_file = Path(template_path)
+    env = Environment(loader=FileSystemLoader(str(template_file.parent)))
+    template = env.get_template(template_file.name)
+    rendered = template.render(sat_file=sat_file, optimusdb_url=optimusdb_url)
+
+    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False)
+    tmp.write(rendered)
+    tmp.close()
+    return tmp.name
+
+
+
 def main() -> int:
     deployer = K8sDeployer(kubeconfig_path=KUBECONFIG_PATH, context=CONTEXT)
     overall_ok = True
 
-    for manifest_path in MANIFESTS:
-        print(f"\nDeploying {manifest_path} ...")
-        try:
-            deployed = deployer.deploy_manifest(manifest_path)
-        except DeploymentError as error:
-            print(f"  ERROR: {error}")
-            overall_ok = False
-            continue
+    emsconfig_tmp: str | None = None
+    try:
+        emsconfig_tmp = render_emsconfig("./manifest/emsconfig.yaml")
 
-        if not deployed:
-            print("  No valid Kubernetes resources found in the manifest.")
-            continue
+        manifests = [
+            emsconfig_tmp if m == "./manifest/emsconfig.yaml" else m
+            for m in MANIFESTS
+        ]
 
-        print("  Created or patched resources:")
-        for resource in deployed:
-            namespace = resource.get("namespace") or "<cluster-scoped>"
-            print(
-                f"  - {resource['kind']}/{resource['name']} "
-                f"(apiVersion={resource['apiVersion']}, namespace={namespace})"
-            )
+        for manifest_path in manifests:
+            print(f"\nDeploying {manifest_path} ...")
+            try:
+                deployed = deployer.deploy_manifest(manifest_path)
+            except DeploymentError as error:
+                print(f"  ERROR: {error}")
+                overall_ok = False
+                continue
+
+            if not deployed:
+                print("  No valid Kubernetes resources found in the manifest.")
+                continue
+
+            print("  Created or patched resources:")
+            for resource in deployed:
+                namespace = resource.get("namespace") or "<cluster-scoped>"
+                print(
+                    f"  - {resource['kind']}/{resource['name']} "
+                    f"(apiVersion={resource['apiVersion']}, namespace={namespace})"
+                )
+    finally:
+        if emsconfig_tmp and os.path.exists(emsconfig_tmp):
+            os.unlink(emsconfig_tmp)
 
     if overall_ok:
         print("\nAll manifests deployed successfully.")

@@ -4,18 +4,19 @@ version = "0.1.0"
 description = "Kubernetes manifest deploy, readiness monitoring, threaded exporter integration, and cleanup tooling."
 readme = "README.md"
 requires-python = ">=3.8"
-license = {text = "MIT"}
+license = {text = "Apache-2.0"}
 authors = [
   {name = "Márk Emődi", email = "mark.emodi@sztaki.hun-ren.hu"}
 ]
 classifiers = [
   "Programming Language :: Python :: 3",
-  "License :: OSI Approved :: MIT License",
+  "License :: OSI Approved :: Apache Software License",
   "Operating System :: OS Independent"
 ]
 dependencies = [
   "kubernetes>=26.0.0",
   "pyyaml>=6.0",
+  "jinja2>=3.0",
 ]
 
 [build-system]
