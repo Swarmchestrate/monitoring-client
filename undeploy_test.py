@@ -16,11 +16,11 @@ KUBECONFIG_PATH = "./k3s.yaml"
 CONTEXT = "default"
 
 MANIFESTS = [
-    "./manifest/custom-metric-config.yaml",
-    "./manifest/emsconfig.yaml",
-    "./manifest/ems+netdata-k3s_parametric.yaml",
-    "./manifest/stomp-listener.yaml",
-    "./manifest/python_manifest.yaml",
+    "./manifests/custom-metric-config.yaml",
+    "./manifests/emsconfig.yaml",
+    "./manifests/ems+netdata-k3s_parametric.yaml",
+    "./manifests/stomp-listener.yaml",
+    "./manifests/python_manifest.yaml",
 ]
 
 
