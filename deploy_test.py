@@ -1,9 +1,6 @@
 import sys
 import os
-import tempfile
 from pathlib import Path
-
-from jinja2 import Environment, FileSystemLoader
 
 # Allow running this script directly from the repo root without installing the package.
 REPO_ROOT = Path(__file__).resolve().parent
@@ -13,6 +10,7 @@ if str(SRC_PATH) not in sys.path:
 
 from swchmonclient.deployer import K8sDeployer
 from swchmonclient.exceptions import DeploymentError
+from swchmonclient.renderer import render_manifest
 
 # Set to the path of your kubeconfig file, or None to use ~/.kube/config
 KUBECONFIG_PATH = "./k3s.yaml"
@@ -20,31 +18,17 @@ KUBECONFIG_PATH = "./k3s.yaml"
 CONTEXT = "default"
 
 # Default values for the emsconfig template
-EMS_SAT_FILE = "tosca_metrics_ze_custom.yaml"
+EMS_SAT_FILE = "SAT-test-ra_20260413_154456.152"
 EMS_OPTIMUSDB_URL = "http://193.225.250.240/optimusdb1/swarmkb"
 
 MANIFESTS = [
-    "./manifest/custom-metric-config.yaml",
     "./manifest/emsconfig.yaml",
     "./manifest/ems+netdata-k3s_parametric.yaml",
-    "./manifest/stomp-listener.yaml",
-    "./manifest/python_manifest.yaml",
 ]
 
-
-def render_emsconfig(template_path: str, sat_file: str = EMS_SAT_FILE, optimusdb_url: str = EMS_OPTIMUSDB_URL) -> str:
-    """Render the emsconfig Jinja2 template and return a path to a temporary file."""
-    template_file = Path(template_path)
-    env = Environment(loader=FileSystemLoader(str(template_file.parent)))
-    template = env.get_template(template_file.name)
-    rendered = template.render(sat_file=sat_file, optimusdb_url=optimusdb_url)
-
-    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False)
-    tmp.write(rendered)
-    tmp.close()
-    return tmp.name
-
-
+    # "./manifest/custom-metric-config.yaml",
+    # "./manifest/stomp-listener.yaml",
+    # "./manifest/python_manifest.yaml",
 
 def main() -> int:
     deployer = K8sDeployer(kubeconfig_path=KUBECONFIG_PATH, context=CONTEXT)
@@ -52,7 +36,11 @@ def main() -> int:
 
     emsconfig_tmp: str | None = None
     try:
-        emsconfig_tmp = render_emsconfig("./manifest/emsconfig.yaml")
+        emsconfig_tmp = render_manifest(
+            "./manifest/emsconfig.yaml",
+            sat_file=EMS_SAT_FILE,
+            optimusdb_url=EMS_OPTIMUSDB_URL,
+        )
 
         manifests = [
             emsconfig_tmp if m == "./manifest/emsconfig.yaml" else m
