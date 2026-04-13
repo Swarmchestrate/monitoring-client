@@ -22,13 +22,13 @@ EMS_SAT_FILE = "SAT-test-ra_20260413_154456.152"
 EMS_OPTIMUSDB_URL = "http://193.225.250.240/optimusdb1/swarmkb"
 
 MANIFESTS = [
-    "./manifest/emsconfig.yaml",
-    "./manifest/ems+netdata-k3s_parametric.yaml",
+    "./manifests/emsconfig.yaml",
+    "./manifests/ems+netdata-k3s_parametric.yaml",
 ]
 
-    # "./manifest/custom-metric-config.yaml",
-    # "./manifest/stomp-listener.yaml",
-    # "./manifest/python_manifest.yaml",
+    # "./manifests/custom-metric-config.yaml",
+    # "./manifests/stomp-listener.yaml",
+    # "./manifests_wip/python_manifest.yaml",
 
 def main() -> int:
     deployer = K8sDeployer(kubeconfig_path=KUBECONFIG_PATH, context=CONTEXT)
@@ -37,13 +37,13 @@ def main() -> int:
     emsconfig_tmp: str | None = None
     try:
         emsconfig_tmp = render_manifest(
-            "./manifest/emsconfig.yaml",
+            "./manifests/emsconfig.yaml",
             sat_file=EMS_SAT_FILE,
             optimusdb_url=EMS_OPTIMUSDB_URL,
         )
 
         manifests = [
-            emsconfig_tmp if m == "./manifest/emsconfig.yaml" else m
+            emsconfig_tmp if m == "./manifests/emsconfig.yaml" else m
             for m in MANIFESTS
         ]
 
