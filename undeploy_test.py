@@ -1,4 +1,5 @@
 import sys
+import os
 from pathlib import Path
 
 # Allow running this script directly from the repo root without installing the package.
@@ -7,13 +8,14 @@ SRC_PATH = REPO_ROOT / "src"
 if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
-from swchmonclient.deployer import K8sDeployer
-from swchmonclient.exceptions import DeploymentError
-
 # Set to the path of your kubeconfig file, or None to use ~/.kube/config
 KUBECONFIG_PATH = "./k3s.yaml"
 # Set to a specific context name, or None to use the current context
 CONTEXT = "default"
+
+# Default values for the emsconfig template
+EMS_SAT_FILE = "SAT-test-ra_20260413_154456.152"
+EMS_OPTIMUSDB_URL = "http://193.225.250.240/optimusdb1/swarmkb"
 
 MANIFESTS = [
     "./manifests/custom-metric-config.yaml",
@@ -25,17 +27,37 @@ MANIFESTS = [
 
 
 def main() -> int:
+    from swchmonclient.deployer import K8sDeployer
+    from swchmonclient.exceptions import DeploymentError
+    from swchmonclient.renderer import render_manifest
+
     deployer = K8sDeployer(kubeconfig_path=KUBECONFIG_PATH, context=CONTEXT)
     overall_ok = True
 
-    for manifest_path in MANIFESTS:
-        print(f"\nUndeploying {manifest_path} ...")
-        try:
-            deleted = deployer.destroy_manifest(manifest_path)
-            print(f"  Done. {deleted} resource(s) deleted.")
-        except DeploymentError as error:
-            print(f"  ERROR: {error}")
-            overall_ok = False
+    emsconfig_tmp: str | None = None
+    try:
+        emsconfig_tmp = render_manifest(
+            "./manifests/emsconfig.yaml",
+            sat_file=EMS_SAT_FILE,
+            optimusdb_url=EMS_OPTIMUSDB_URL,
+        )
+
+        manifests = [
+            emsconfig_tmp if m == "./manifests/emsconfig.yaml" else m
+            for m in MANIFESTS
+        ]
+
+        for manifest_path in manifests:
+            print(f"\nUndeploying {manifest_path} ...")
+            try:
+                deleted = deployer.destroy_manifest(manifest_path)
+                print(f"  Done. {deleted} resource(s) deleted.")
+            except DeploymentError as error:
+                print(f"  ERROR: {error}")
+                overall_ok = False
+    finally:
+        if emsconfig_tmp and os.path.exists(emsconfig_tmp):
+            os.unlink(emsconfig_tmp)
 
     if overall_ok:
         print("\nAll manifests undeployed successfully.")
