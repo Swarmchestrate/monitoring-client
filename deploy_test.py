@@ -60,8 +60,9 @@ def main() -> int:
             variables = manifest["variables"]
 
             if variables:
-                variables_text = ", ".join(f"{key}={value}" for key, value in variables.items())
-                print(f"\nDeploying {display_path} with variables: {variables_text} ...")
+                print(f"\nDeploying {display_path} with variables:")
+                for key, value in variables.items():
+                    print(f"  - {key}: {value}")
             else:
                 print(f"\nDeploying {display_path} ...")
             try:
