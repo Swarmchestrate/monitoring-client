@@ -62,7 +62,7 @@ def main() -> int:
             if variables:
                 print(f"\nDeploying {display_path} with variables:")
                 for key, value in variables.items():
-                    print(f"    - {key}: {value}")
+                    print(f"    • {key}: {value}")
             else:
                 print(f"\nDeploying {display_path} ...")
             try:
