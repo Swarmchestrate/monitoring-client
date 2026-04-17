@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: listener
+  labels:
+    app: listener
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: listener
+  template:
+    metadata:
+      labels:
+        app: listener
+    spec:
+      containers:
+        - name: listener
+          image: emodimark/listener:latest
+          imagePullPolicy: Always
+          env:
+            - name: STOMP_HOST
+              value: "emsserver-ems-server"
+            - name: STOMP_PORT
+              value: "61610"
+            - name: STOMP_DESTINATION
+              value: "/topic/>"
+            - name: STOMP_RECONNECT_DELAY
+              value: "5"
+            - name: STOMP_MAX_RECONNECT_DELAY
+              value: "60"
