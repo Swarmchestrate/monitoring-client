@@ -35,20 +35,35 @@ def main() -> int:
     overall_ok = True
 
     emsconfig_tmp: str | None = None
+    rendered_variables = {
+        "sat_file": EMS_SAT_FILE,
+        "optimusdb_url": EMS_OPTIMUSDB_URL,
+    }
     try:
         emsconfig_tmp = render_manifest(
             "./manifests/emsconfig.yaml",
-            sat_file=EMS_SAT_FILE,
-            optimusdb_url=EMS_OPTIMUSDB_URL,
+            **rendered_variables,
         )
 
         manifests = [
-            emsconfig_tmp if m == "./manifests/emsconfig.yaml" else m
+            {
+                "display_path": m,
+                "actual_path": emsconfig_tmp if m == "./manifests/emsconfig.yaml" else m,
+                "variables": rendered_variables if m == "./manifests/emsconfig.yaml" else None,
+            }
             for m in MANIFESTS
         ]
 
-        for manifest_path in manifests:
-            print(f"\nUndeploying {manifest_path} ...")
+        for manifest in manifests:
+            manifest_path = manifest["actual_path"]
+            display_path = manifest["display_path"]
+            variables = manifest["variables"]
+
+            if variables:
+                variables_text = ", ".join(f"{key}={value}" for key, value in variables.items())
+                print(f"\nUndeploying {display_path} with variables: {variables_text} ...")
+            else:
+                print(f"\nUndeploying {display_path} ...")
             try:
                 deleted = deployer.destroy_manifest(manifest_path)
                 print(f"  Done. {deleted} resource(s) deleted.")
