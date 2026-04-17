@@ -1,6 +1,6 @@
 import time
 
-from swchmonclient.threader import MonitoringThreadManager
+from swchmonclient.thread_manager import MonitoringThreadManager
 
 
 def counter_worker(stop_event, max_count=10000):

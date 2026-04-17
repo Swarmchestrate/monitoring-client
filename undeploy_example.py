@@ -71,6 +71,17 @@ def main() -> int:
             except DeploymentError as error:
                 print(f"  ERROR: {error}")
                 overall_ok = False
+
+        print("\nUndeploying DaemonSet/ems-client-daemonset ...")
+        try:
+            deleted = deployer.destroy_app(
+                label_selector="app=ems-client-daemonset",
+                kinds=[("apps/v1", "DaemonSet")],
+            )
+            print(f"  Done. {deleted} matching daemonset resource(s) deleted.")
+        except DeploymentError as error:
+            print(f"  ERROR: {error}")
+            overall_ok = False
     finally:
         if emsconfig_tmp and os.path.exists(emsconfig_tmp):
             os.unlink(emsconfig_tmp)

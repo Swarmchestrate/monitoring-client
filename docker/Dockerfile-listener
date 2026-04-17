@@ -7,9 +7,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 COPY pyproject.toml README.md LICENSE ./
 COPY src ./src
-COPY listener_test.py ./listener_test.py
+COPY listener_example.py ./listener_example.py
 
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir .
 
-CMD ["python", "listener_test.py"]
+CMD ["python", "listener_example.py"]
