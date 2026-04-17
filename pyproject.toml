@@ -3,7 +3,7 @@ name = "swchmonclient"
 version = "0.1.0"
 description = "Kubernetes manifest deploy, readiness monitoring, threaded exporter integration, and cleanup tooling."
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.12"
 license = {text = "Apache-2.0"}
 authors = [
   {name = "Márk Emődi", email = "mark.emodi@sztaki.hun-ren.hu"}

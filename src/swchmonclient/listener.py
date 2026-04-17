@@ -89,9 +89,11 @@ def run_stomp_listener(
     while not resolved_stop_event.is_set():
         conn = None
         should_backoff = False
+        connection_established = False
         try:
             conn = factory(resolved_host, resolved_port)
             conn.connect(login=resolved_username, passcode=resolved_password, wait=True)
+            connection_established = True
             conn.subscribe(destination=resolved_destination, id=1, ack="auto")
             logger.info("Subscription created successfully")
             current_reconnect_delay = max(0, resolved_reconnect_delay)
@@ -125,7 +127,10 @@ def run_stomp_listener(
                     disconnect = getattr(conn, "disconnect", None)
                     if callable(disconnect):
                         disconnect()
-                        logger.info("Disconnected cleanly")
+                        if connection_established:
+                            logger.info("Connection cleanup completed")
+                        else:
+                            logger.debug("No active connection to clean up")
                 except Exception:
                     logger.debug("Disconnect cleanup failed", exc_info=True)
 
