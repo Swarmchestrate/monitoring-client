@@ -1,0 +1,58 @@
+tosca_definitions_version: tosca_prestocloud_mapping_1_2
+
+metadata:
+   template_name: ICCS generated types definition
+   template_author: ICCS
+
+description: Types Description
+
+imports:
+   - tosca-normative-types:1.2
+   - iccs-normative-types:1.0
+   - resource-descriptions:1.0
+   - placement-constraints:1.0
+
+node_types:
+  stressng:
+    nodes.AdvancedMonitoringCollector: 
+      derived_from: tosca.nodes.Root 
+      description: An example illustrating metric collection possibilities 
+      capabilities: 
+        - monitoring: 
+            type: capabilities.MetricMonitoringCapability 
+            properties:
+              raw:
+                - cpu_util_instance: 
+                    collector: netdata
+#                    collector_inst: netdata__system__cpu__user
+                    config:
+                      scope_contexts: system.cpu
+                      results-aggregation: SUM
+                    collection_frequency: 15 s
+                    collection_output: all  #first/last
+                    unit: 
+                      id: 'prct'
+                      type: real
+                      range: [0, 100] 
+
+              composite:
+                - mean_cpu_util_prct:
+                    formula: 
+                      type: 'mean'
+                      argument: 'cpu_util_instance'
+                      collection_frequency: 30 s
+                      collection_output: all  #first/last
+                    window: 
+                      type: 'sliding'  
+                      size: '5 min'
+#                    processing:
+#                      type: 'grouping'  #fasdsd
+#                      criteria: 'PER_ZONE' #PER_HOST/PER_ZONE/PER_REGION/CROSS-SWARMS
+
+        - slo:
+            type: capabilities.SloMonitoringCapability 
+            properties: 
+              - cpu_slo_upper:
+                  constraint: 'mean_cpu_util_prct > 80'
+              - cpu_slo_lower:
+                  constraint: 'mean_cpu_util_prct < 20'

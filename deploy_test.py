@@ -18,7 +18,7 @@ KUBECONFIG_PATH = "./k3s.yaml"
 CONTEXT = "default"
 
 # Default values for the emsconfig template
-EMS_SAT_FILE = "SAT-test-ra_20260413_154456.152"
+EMS_SAT_FILE = "tosca_metrics_ze.yaml"
 EMS_OPTIMUSDB_URL = "http://193.225.250.240/optimusdb1/swarmkb"
 
 MANIFESTS = [
