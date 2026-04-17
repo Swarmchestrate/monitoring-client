@@ -17,6 +17,8 @@ dependencies = [
   "kubernetes>=26.0.0",
   "pyyaml>=6.0",
   "jinja2>=3.0",
+  "stomp.py>=8.2.0",
+  "python-dotenv>=1.2.2",
 ]
 
 [build-system]

@@ -1,9 +1,10 @@
 import inspect
 import threading
 from dataclasses import dataclass
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, Optional
 
 from .exceptions import ThreadManagementError
+from .listener import run_stomp_listener
 
 
 @dataclass
@@ -64,6 +65,39 @@ class MonitoringThreadManager:
         if error is not None:
             raise ThreadManagementError(f"Thread '{name}' exited with error: {error}") from error
 
+    def start_listener_thread(
+        self,
+        name: str = "stomp-listener",
+        *,
+        host: Optional[str] = None,
+        port: Optional[int] = None,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+        destination: Optional[str] = None,
+        reconnect_delay: Optional[int] = None,
+        max_reconnect_delay: Optional[int] = None,
+        connection_factory: Optional[Callable[[str, int], object]] = None,
+        daemon: bool = True,
+    ) -> str:
+        """Start the STOMP listener in a managed background thread."""
+        return self.start_monitoring_thread(
+            name,
+            run_stomp_listener,
+            daemon=daemon,
+            host=host,
+            port=port,
+            username=username,
+            password=password,
+            destination=destination,
+            reconnect_delay=reconnect_delay,
+            max_reconnect_delay=max_reconnect_delay,
+            connection_factory=connection_factory,
+        )
+
+    def stop_listener_thread(self, name: str = "stomp-listener", timeout: float = 30.0) -> None:
+        """Stop a previously started STOMP listener thread."""
+        self.stop_monitoring_thread(name, timeout=timeout)
+
     def stop_all(self, timeout_per_thread: float = 30.0) -> None:
         for name in list(self.list_threads()):
             self.stop_monitoring_thread(name, timeout=timeout_per_thread)
@@ -98,3 +132,19 @@ class MonitoringThreadManager:
                     self._errors[name] = error
 
         return runner
+
+
+_default_thread_manager = MonitoringThreadManager()
+
+
+def start_listener_thread(
+    name: str = "stomp-listener",
+    **kwargs: Any,
+) -> str:
+    """Convenience function to start the package STOMP listener in a new thread."""
+    return _default_thread_manager.start_listener_thread(name=name, **kwargs)
+
+
+def stop_listener_thread(name: str = "stomp-listener", timeout: float = 30.0) -> None:
+    """Convenience function to stop the package STOMP listener thread."""
+    _default_thread_manager.stop_listener_thread(name=name, timeout=timeout)
