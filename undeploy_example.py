@@ -75,7 +75,7 @@ def main() -> int:
         print("\nUndeploying DaemonSet/ems-client-daemonset ...")
         try:
             deleted = deployer.destroy_app(
-                label_selector="app=ems-client-daemonset",
+                label_selector="app.kubernetes.io/name=ems-client-daemonset",
                 kinds=[("apps/v1", "DaemonSet")],
             )
             print(f"  Done. {deleted} matching daemonset resource(s) deleted.")
