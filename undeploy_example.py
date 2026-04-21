@@ -63,11 +63,11 @@ def main() -> int:
             variables = manifest["variables"]
 
             if variables:
-                logger.info("\nUndeploying %s with variables:", display_path)
+                logger.info("Undeploying %s with variables:", display_path)
                 for key, value in variables.items():
                     logger.info("    • %s: %s", key, value)
             else:
-                logger.info("\nUndeploying %s ...", display_path)
+                logger.info("Undeploying %s ...", display_path)
             try:
                 deleted = deployer.destroy_manifest(manifest_path)
                 logger.info("  Done. %s resource(s) deleted.", deleted)
@@ -75,7 +75,7 @@ def main() -> int:
                 logger.error("  ERROR: %s", error)
                 overall_ok = False
 
-        logger.info("\nUndeploying DaemonSet/ems-client-daemonset ...")
+        logger.info("Undeploying DaemonSet/ems-client-daemonset ...")
         try:
             deleted = deployer.destroy_app(
                 label_selector="app.kubernetes.io/name=ems-client-daemonset",
@@ -90,10 +90,10 @@ def main() -> int:
             os.unlink(emsconfig_tmp)
 
     if overall_ok:
-        logger.info("\nAll manifests undeployed successfully.")
+        logger.info("All manifests undeployed successfully.")
         return 0
     else:
-        logger.info("\nOne or more manifests failed to undeploy.")
+        logger.info("One or more manifests failed to undeploy.")
         return 1
 
 

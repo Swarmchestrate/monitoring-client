@@ -63,11 +63,11 @@ def main() -> int:
             variables = manifest["variables"]
 
             if variables:
-                logger.info("\nDeploying %s with variables:", display_path)
+                logger.info("Deploying %s with variables:", display_path)
                 for key, value in variables.items():
                     logger.info("    • %s: %s", key, value)
             else:
-                logger.info("\nDeploying %s ...", display_path)
+                logger.info("Deploying %s ...", display_path)
             try:
                 deployed = deployer.deploy_manifest(manifest_path)
             except DeploymentError as error:
@@ -94,10 +94,10 @@ def main() -> int:
             os.unlink(emsconfig_tmp)
 
     if overall_ok:
-        logger.info("\nAll manifests deployed successfully.")
+        logger.info("All manifests deployed successfully.")
         return 0
     else:
-        logger.info("\nOne or more manifests failed to deploy.")
+        logger.info("One or more manifests failed to deploy.")
         return 1
 
 
