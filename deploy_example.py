@@ -8,10 +8,6 @@ SRC_PATH = REPO_ROOT / "src"
 if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
-from swchmonclient.deployer import K8sDeployer
-from swchmonclient.exceptions import DeploymentError
-from swchmonclient.renderer import render_manifest
-
 # Set to the path of your kubeconfig file, or None to use ~/.kube/config
 KUBECONFIG_PATH = "./k3s.yaml"
 # Set to a specific context name, or None to use the current context
@@ -31,6 +27,12 @@ MANIFESTS = [
     # "./manifests_wip/python_manifest.yaml",
 
 def main() -> int:
+    from swchmonclient.deployer import K8sDeployer
+    from swchmonclient.exceptions import DeploymentError
+    from swchmonclient.logging_utils import configure_stdout_logger
+    from swchmonclient.renderer import render_manifest
+
+    logger = configure_stdout_logger("deploy_example")
     deployer = K8sDeployer(kubeconfig_path=KUBECONFIG_PATH, context=CONTEXT)
     overall_ok = True
 
@@ -60,38 +62,41 @@ def main() -> int:
             variables = manifest["variables"]
 
             if variables:
-                print(f"\nDeploying {display_path} with variables:")
+                logger.info("\nDeploying %s with variables:", display_path)
                 for key, value in variables.items():
-                    print(f"    • {key}: {value}")
+                    logger.info("    • %s: %s", key, value)
             else:
-                print(f"\nDeploying {display_path} ...")
+                logger.info("\nDeploying %s ...", display_path)
             try:
                 deployed = deployer.deploy_manifest(manifest_path)
             except DeploymentError as error:
-                print(f"  ERROR: {error}")
+                logger.error("  ERROR: %s", error)
                 overall_ok = False
                 continue
 
             if not deployed:
-                print("No valid Kubernetes resources found in the manifest.")
+                logger.info("No valid Kubernetes resources found in the manifest.")
                 continue
 
-            print("  Created or patched resources:")
+            logger.info("  Created or patched resources:")
             for resource in deployed:
                 namespace = resource.get("namespace") or "<cluster-scoped>"
-                print(
-                    f"  - {resource['kind']}/{resource['name']} "
-                    f"(apiVersion={resource['apiVersion']}, namespace={namespace})"
+                logger.info(
+                    "  - %s/%s (apiVersion=%s, namespace=%s)",
+                    resource["kind"],
+                    resource["name"],
+                    resource["apiVersion"],
+                    namespace,
                 )
     finally:
         if emsconfig_tmp and os.path.exists(emsconfig_tmp):
             os.unlink(emsconfig_tmp)
 
     if overall_ok:
-        print("\nAll manifests deployed successfully.")
+        logger.info("\nAll manifests deployed successfully.")
         return 0
     else:
-        print("\nOne or more manifests failed to deploy.")
+        logger.info("\nOne or more manifests failed to deploy.")
         return 1
 
 

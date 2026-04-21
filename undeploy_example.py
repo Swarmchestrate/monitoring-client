@@ -29,8 +29,10 @@ MANIFESTS = [
 def main() -> int:
     from swchmonclient.deployer import K8sDeployer
     from swchmonclient.exceptions import DeploymentError
+    from swchmonclient.logging_utils import configure_stdout_logger
     from swchmonclient.renderer import render_manifest
 
+    logger = configure_stdout_logger("undeploy_example")
     deployer = K8sDeployer(kubeconfig_path=KUBECONFIG_PATH, context=CONTEXT)
     overall_ok = True
 
@@ -60,37 +62,37 @@ def main() -> int:
             variables = manifest["variables"]
 
             if variables:
-                print(f"\nUndeploying {display_path} with variables:")
+                logger.info("\nUndeploying %s with variables:", display_path)
                 for key, value in variables.items():
-                    print(f"    • {key}: {value}")
+                    logger.info("    • %s: %s", key, value)
             else:
-                print(f"\nUndeploying {display_path} ...")
+                logger.info("\nUndeploying %s ...", display_path)
             try:
                 deleted = deployer.destroy_manifest(manifest_path)
-                print(f"  Done. {deleted} resource(s) deleted.")
+                logger.info("  Done. %s resource(s) deleted.", deleted)
             except DeploymentError as error:
-                print(f"  ERROR: {error}")
+                logger.error("  ERROR: %s", error)
                 overall_ok = False
 
-        print("\nUndeploying DaemonSet/ems-client-daemonset ...")
+        logger.info("\nUndeploying DaemonSet/ems-client-daemonset ...")
         try:
             deleted = deployer.destroy_app(
                 label_selector="app.kubernetes.io/name=ems-client-daemonset",
                 kinds=[("apps/v1", "DaemonSet")],
             )
-            print(f"  Done. {deleted} matching daemonset resource(s) deleted.")
+            logger.info("  Done. %s matching daemonset resource(s) deleted.", deleted)
         except DeploymentError as error:
-            print(f"  ERROR: {error}")
+            logger.error("  ERROR: %s", error)
             overall_ok = False
     finally:
         if emsconfig_tmp and os.path.exists(emsconfig_tmp):
             os.unlink(emsconfig_tmp)
 
     if overall_ok:
-        print("\nAll manifests undeployed successfully.")
+        logger.info("\nAll manifests undeployed successfully.")
         return 0
     else:
-        print("\nOne or more manifests failed to undeploy.")
+        logger.info("\nOne or more manifests failed to undeploy.")
         return 1
 
 
