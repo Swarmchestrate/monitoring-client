@@ -15,6 +15,7 @@ CONTEXT = "default"
 
 # Default values for the emsconfig template
 EMS_SAT_FILE = "tosca_metrics_ze.yaml"
+# EMS_SAT_FILE = "sat-innorenew.yaml"
 EMS_OPTIMUSDB_URL = "http://193.225.250.240/optimusdb1/swarmkb"
 
 MANIFESTS = [
