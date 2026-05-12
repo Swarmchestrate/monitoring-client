@@ -1,4 +1,6 @@
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+import os
+from logging import Logger
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import yaml
 from kubernetes import config, dynamic
@@ -6,6 +8,26 @@ from kubernetes.client import ApiClient
 from kubernetes.client.exceptions import ApiException
 
 from .exceptions import DeploymentError
+
+
+MONITORING_TEMPLATE_MANIFEST = "./manifests/emsconfig.yaml"
+MONITORING_DEPLOY_MANIFESTS = (
+    MONITORING_TEMPLATE_MANIFEST,
+    "./manifests/ems+netdata-k3s_parametric.yaml",
+)
+MONITORING_UNDEPLOY_MANIFESTS = (
+    "./manifests/custom-metric-config.yaml",
+    MONITORING_TEMPLATE_MANIFEST,
+    "./manifests/ems+netdata-k3s_parametric.yaml",
+    "./manifests/stomp-listener.yaml",
+    "./manifests/python_manifest.yaml",
+)
+MONITORING_EXTRA_RESOURCES_TO_DELETE = (
+    ("apps/v1", "DaemonSet", "ems-client-daemonset", "daemonset"),
+    ("v1", "ConfigMap", "ems-client-configmap", "configmap"),
+    ("v1", "ConfigMap", "monitoring-configmap", "configmap"),
+)
+DEFAULT_MONITORING_NAMESPACE = "default"
 
 
 class K8sDeployer:
@@ -142,6 +164,32 @@ class K8sDeployer:
 
         return deleted
 
+    def destroy_resource(
+        self,
+        api_version: str,
+        kind: str,
+        name: str,
+        namespace: Optional[str] = None,
+    ) -> int:
+        """Delete a single named resource and return 1 if it was deleted, else 0."""
+        try:
+            resource = self.dynamic_client.resources.get(api_version=api_version, kind=kind)
+            namespaced = bool(getattr(resource, "namespaced", True))
+
+            if namespaced:
+                resource_namespace = namespace or "default"
+                resource.delete(name=name, namespace=resource_namespace)
+            else:
+                resource.delete(name=name)
+        except ApiException as error:
+            if error.status == 404:
+                return 0
+            raise DeploymentError(f"Failed to delete {kind}/{name}: {error.reason}") from error
+        except Exception as error:
+            raise DeploymentError(f"Failed to delete {kind}/{name}: {error}") from error
+
+        return 1
+
     def destroy_app(
         self,
         label_selector: str,
@@ -189,3 +237,210 @@ class K8sDeployer:
                 ) from error
 
         return deleted
+
+
+def _resolve_manifests_with_optional_render(
+    manifests: Sequence[str],
+    template_manifest_path: Optional[str] = None,
+    template_variables: Optional[Dict[str, str]] = None,
+):
+    from .renderer import render_manifest
+
+    rendered_template_path: Optional[str] = None
+    manifest_variables = template_variables or {}
+
+    if template_manifest_path:
+        rendered_template_path = render_manifest(template_manifest_path, **manifest_variables)
+
+    resolved_manifests = [
+        {
+            "display_path": manifest,
+            "actual_path": rendered_template_path if template_manifest_path and manifest == template_manifest_path else manifest,
+            "variables": manifest_variables if template_manifest_path and manifest == template_manifest_path else None,
+        }
+        for manifest in manifests
+    ]
+
+    return resolved_manifests, rendered_template_path
+
+
+def _deploy_manifests_with_optional_render(
+    manifests: Sequence[str],
+    kubeconfig_path: Optional[str] = None,
+    context: Optional[str] = None,
+    template_manifest_path: Optional[str] = None,
+    template_variables: Optional[Dict[str, str]] = None,
+    logger: Optional[Logger] = None,
+    logger_name: str = "swchmonclient.deploy",
+) -> int:
+    """Deploy manifests and optionally render one manifest before deployment.
+
+    If ``template_manifest_path`` is provided and it appears in ``manifests``, that
+    manifest is rendered with ``template_variables`` and the rendered file is used
+    for deployment, while logs still show the original manifest path.
+    """
+    from .logging_utils import configure_stdout_logger
+    active_logger = logger or configure_stdout_logger(logger_name)
+    deployer = K8sDeployer(kubeconfig_path=kubeconfig_path, context=context)
+    overall_ok = True
+    rendered_template_path: Optional[str] = None
+
+    try:
+        resolved_manifests, rendered_template_path = _resolve_manifests_with_optional_render(
+            manifests=manifests,
+            template_manifest_path=template_manifest_path,
+            template_variables=template_variables,
+        )
+
+        for manifest in resolved_manifests:
+            manifest_path = manifest["actual_path"]
+            display_path = manifest["display_path"]
+            variables = manifest["variables"]
+
+            if variables:
+                active_logger.info("Deploying %s with variables:", display_path)
+                for key, value in variables.items():
+                    active_logger.info("    • %s: %s", key, value)
+            else:
+                active_logger.info("Deploying %s ...", display_path)
+
+            try:
+                deployed = deployer.deploy_manifest(manifest_path)
+            except DeploymentError as error:
+                active_logger.error("  ERROR: %s", error)
+                overall_ok = False
+                continue
+
+            if not deployed:
+                active_logger.info("No valid Kubernetes resources found in the manifest.")
+                continue
+
+            active_logger.info("  Created or patched resources:")
+            for resource in deployed:
+                namespace = resource.get("namespace") or "<cluster-scoped>"
+                active_logger.info(
+                    "  - %s/%s (apiVersion=%s, namespace=%s)",
+                    resource["kind"],
+                    resource["name"],
+                    resource["apiVersion"],
+                    namespace,
+                )
+    finally:
+        if rendered_template_path and os.path.exists(rendered_template_path):
+            os.unlink(rendered_template_path)
+
+    if overall_ok:
+        active_logger.info("All manifests deployed successfully.")
+        return 0
+
+    active_logger.info("One or more manifests failed to deploy.")
+    return 1
+
+
+def _undeploy_manifests_with_optional_render(
+    manifests: Sequence[str],
+    kubeconfig_path: Optional[str] = None,
+    context: Optional[str] = None,
+    template_manifest_path: Optional[str] = None,
+    template_variables: Optional[Dict[str, str]] = None,
+    extra_resources_to_delete: Sequence[Tuple[str, str, str, str]] = (),
+    logger: Optional[Logger] = None,
+    logger_name: str = "swchmonclient.undeploy",
+) -> int:
+    from .logging_utils import configure_stdout_logger
+
+    active_logger = logger or configure_stdout_logger(logger_name)
+    deployer = K8sDeployer(kubeconfig_path=kubeconfig_path, context=context)
+    overall_ok = True
+    rendered_template_path: Optional[str] = None
+
+    try:
+        resolved_manifests, rendered_template_path = _resolve_manifests_with_optional_render(
+            manifests=manifests,
+            template_manifest_path=template_manifest_path,
+            template_variables=template_variables,
+        )
+
+        for manifest in resolved_manifests:
+            manifest_path = manifest["actual_path"]
+            display_path = manifest["display_path"]
+            variables = manifest["variables"]
+
+            if variables:
+                active_logger.info("Undeploying %s with variables:", display_path)
+                for key, value in variables.items():
+                    active_logger.info("    • %s: %s", key, value)
+            else:
+                active_logger.info("Undeploying %s ...", display_path)
+
+            try:
+                deleted = deployer.destroy_manifest(manifest_path)
+                active_logger.info("  Done. %s resource(s) deleted.", deleted)
+            except DeploymentError as error:
+                active_logger.error("  ERROR: %s", error)
+                overall_ok = False
+
+        for api_version, kind, name, resource_label in extra_resources_to_delete:
+            active_logger.info("Undeploying %s/%s ...", kind, name)
+            try:
+                deleted = deployer.destroy_resource(
+                    api_version=api_version,
+                    kind=kind,
+                    name=name,
+                    namespace=DEFAULT_MONITORING_NAMESPACE,
+                )
+                active_logger.info("  Done. %s %s resource(s) deleted.", deleted, resource_label)
+            except DeploymentError as error:
+                active_logger.error("  ERROR: %s", error)
+                overall_ok = False
+    finally:
+        if rendered_template_path and os.path.exists(rendered_template_path):
+            os.unlink(rendered_template_path)
+
+    if overall_ok:
+        active_logger.info("All manifests undeployed successfully.")
+        return 0
+
+    active_logger.info("One or more manifests failed to undeploy.")
+    return 1
+
+
+def deploy_monitoring(
+    kubeconfig_path: Optional[str],
+    sat_file: str,
+    optimusdb_url: str,
+    logger: Optional[Logger] = None,
+) -> int:
+    """Deploy the standard monitoring stack manifests."""
+    return _deploy_manifests_with_optional_render(
+        manifests=MONITORING_DEPLOY_MANIFESTS,
+        kubeconfig_path=kubeconfig_path,
+        template_manifest_path=MONITORING_TEMPLATE_MANIFEST,
+        template_variables={
+            "sat_file": sat_file,
+            "optimusdb_url": optimusdb_url,
+        },
+        logger=logger,
+        logger_name="swchmonclient.deploy_monitoring",
+    )
+
+
+def undeploy_monitoring(
+    kubeconfig_path: Optional[str],
+    sat_file: str,
+    optimusdb_url: str,
+    logger: Optional[Logger] = None,
+) -> int:
+    """Undeploy the standard monitoring stack manifests and cleanup resources."""
+    return _undeploy_manifests_with_optional_render(
+        manifests=MONITORING_UNDEPLOY_MANIFESTS,
+        kubeconfig_path=kubeconfig_path,
+        template_manifest_path=MONITORING_TEMPLATE_MANIFEST,
+        template_variables={
+            "sat_file": sat_file,
+            "optimusdb_url": optimusdb_url,
+        },
+        extra_resources_to_delete=MONITORING_EXTRA_RESOURCES_TO_DELETE,
+        logger=logger,
+        logger_name="swchmonclient.undeploy_monitoring",
+    )
