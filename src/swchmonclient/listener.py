@@ -1,6 +1,7 @@
 import logging
 import os
 import threading
+from dataclasses import dataclass, field
 from typing import Callable
 
 import stomp
@@ -11,11 +12,47 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 
+def _force_disconnect_connection(connection: object) -> None:
+    transport = getattr(connection, "transport", None)
+    disconnect_socket = getattr(transport, "disconnect_socket", None)
+    if callable(disconnect_socket):
+        disconnect_socket()
+        return
+
+    disconnect = getattr(connection, "disconnect", None)
+    if callable(disconnect):
+        disconnect()
+
+
+@dataclass
+class StompConnectionController:
+    current_connection: object | None = None
+    _lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def set_connection(self, connection: object | None) -> None:
+        with self._lock:
+            self.current_connection = connection
+
+    def clear_connection(self, connection: object) -> None:
+        with self._lock:
+            if self.current_connection is connection:
+                self.current_connection = None
+
+    def disconnect_active(self) -> None:
+        with self._lock:
+            connection = self.current_connection
+
+        if connection is None:
+            return
+
+        _force_disconnect_connection(connection)
+
+
 class LoggingStompListener(stomp.ConnectionListener):
     """Simple STOMP listener that logs connection and message events."""
 
     def on_connected(self, frame) -> None:
-        logger.info("Connected to ActiveMQ")
+        logger.debug("Connected to ActiveMQ")
 
     def on_disconnected(self) -> None:
         logger.warning("Disconnected from ActiveMQ")
@@ -100,6 +137,7 @@ def run_stomp_listener(
     max_reconnect_delay: int | None = None,
     connection_factory: Callable[[str, int], object] | None = None,
     listener: object | None = None,
+    connection_controller: StompConnectionController | None = None,
 ) -> None:
     """Run a reconnecting STOMP listener until the provided stop event is set."""
     resolved_stop_event = stop_event or threading.Event()
@@ -134,6 +172,8 @@ def run_stomp_listener(
         connection_established = False
         try:
             conn = factory(resolved_host, resolved_port)
+            if connection_controller is not None:
+                connection_controller.set_connection(conn)
             if listener is not None:
                 conn.set_listener("", listener)
             conn.connect(login=resolved_username, passcode=resolved_password, wait=True)
@@ -190,15 +230,16 @@ def run_stomp_listener(
         finally:
             if conn is not None:
                 try:
-                    disconnect = getattr(conn, "disconnect", None)
-                    if callable(disconnect):
-                        disconnect()
-                        if connection_established:
-                            logger.info("Connection cleanup completed")
-                        else:
-                            logger.debug("No active connection to clean up")
+                    _force_disconnect_connection(conn)
+                    if connection_established:
+                        logger.info("Connection cleanup completed")
+                    else:
+                        logger.debug("No active connection to clean up")
                 except Exception:
                     logger.debug("Disconnect cleanup failed", exc_info=True)
+                finally:
+                    if connection_controller is not None:
+                        connection_controller.clear_connection(conn)
 
         if not resolved_stop_event.is_set():
             resolved_stop_event.wait(current_reconnect_delay)

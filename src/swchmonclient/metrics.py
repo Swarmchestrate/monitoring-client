@@ -13,7 +13,7 @@ from .listener import CallbackStompListener
 from .thread_manager import MonitoringThreadManager
 
 MAX_SAMPLES_PER_METRIC = 1
-RAW_MAX_SAMPLES_PER_NODE = 1000
+RAW_MAX_SAMPLES_PER_RAW_METRIC = 1000
 LISTENER_THREAD_NAME = "metric-listener"
 RAW_LISTENER_THREAD_NAME_PREFIX = "metric-raw-listener"
 
@@ -155,9 +155,15 @@ class MetricSubscriptionManager:
                 f"Failed to subscribe to metric '{metric}': {error}"
             ) from error
 
-    def subscribe_metric_raw(self, metric: str, node: list[str] | str) -> dict[str, str]:
+    def subscribe_metric_raw(
+        self,
+        metric: str,
+        node: list[str] | str,
+        cache_size: int | None = None,
+    ) -> dict[str, str]:
         destination = self._normalize_metric(metric)
         normalized_nodes = self._resolve_raw_nodes(node)
+        resolved_cache_size = self._resolve_raw_cache_size(cache_size)
 
         with self._lock:
             if destination in self._subscriptions:
@@ -183,10 +189,19 @@ class MetricSubscriptionManager:
                 if destination not in node_subscription.destinations:
                     node_subscription.destinations.add(destination)
                     node_subscription.samples_by_destination[destination] = deque(
-                        maxlen=RAW_MAX_SAMPLES_PER_NODE
+                        maxlen=resolved_cache_size
                     )
                     raw_metric_nodes.add(current_node)
                     destination_added = True
+                else:
+                    existing_samples = node_subscription.samples_by_destination.get(
+                        destination,
+                        deque(maxlen=resolved_cache_size),
+                    )
+                    node_subscription.samples_by_destination[destination] = deque(
+                        existing_samples,
+                        maxlen=resolved_cache_size,
+                    )
 
                 thread_name = node_subscription.thread_name
                 thread_names[current_node] = thread_name
@@ -345,7 +360,7 @@ class MetricSubscriptionManager:
                     continue
                 samples = node_subscription.samples_by_destination.get(
                     destination,
-                    deque(maxlen=RAW_MAX_SAMPLES_PER_NODE),
+                    deque(maxlen=RAW_MAX_SAMPLES_PER_RAW_METRIC),
                 )
                 matching_samples = [
                     sample for sample in samples if sample.timestamp >= cutoff
@@ -355,7 +370,7 @@ class MetricSubscriptionManager:
                 ]
                 node_subscription.samples_by_destination[destination] = deque(
                     remaining_samples,
-                    maxlen=RAW_MAX_SAMPLES_PER_NODE,
+                    maxlen=RAW_MAX_SAMPLES_PER_RAW_METRIC,
                 )
                 results[node] = [
                     {"timestamp": sample.timestamp, "value": sample.value}
@@ -458,48 +473,43 @@ class MetricSubscriptionManager:
                     )
                 target_nodes = normalized_nodes
 
-            nodes_to_stop: list[tuple[str, str, Deque[_RawMetricSample]]] = []
+            nodes_to_stop: list[tuple[str, str]] = []
             for current_node in target_nodes:
                 node_subscription = self._raw_node_subscriptions.get(current_node)
                 if node_subscription is None:
                     continue
-                removed_samples = node_subscription.samples_by_destination.pop(
+
+                if node_subscription.destinations == {destination}:
+                    nodes_to_stop.append((current_node, node_subscription.thread_name))
+                    continue
+
+                node_subscription.samples_by_destination.pop(
                     destination,
-                    deque(maxlen=RAW_MAX_SAMPLES_PER_NODE),
+                    deque(maxlen=RAW_MAX_SAMPLES_PER_RAW_METRIC),
                 )
                 node_subscription.destinations.discard(destination)
                 raw_metric_nodes.discard(current_node)
-                if not node_subscription.destinations:
-                    self._raw_node_subscriptions.pop(current_node, None)
-                    nodes_to_stop.append(
-                        (current_node, node_subscription.thread_name, removed_samples)
-                    )
-            if not raw_metric_nodes:
+
+            if not raw_metric_nodes and not nodes_to_stop:
                 self._raw_metric_nodes.pop(destination, None)
 
         stopped_nodes: set[str] = set()
         try:
-            for current_node, thread_name, _removed_samples in nodes_to_stop:
+            for current_node, thread_name in nodes_to_stop:
                 self._thread_manager.stop_listener_thread(
                     thread_name
                 )
                 stopped_nodes.add(current_node)
         except ThreadManagementError as error:
             with self._lock:
-                for current_node, thread_name, removed_samples in nodes_to_stop:
-                    if current_node in stopped_nodes:
-                        continue
-                    node_subscription = self._raw_node_subscriptions.setdefault(
-                        current_node,
-                        _RawNodeSubscription(thread_name=thread_name),
-                    )
-                    node_subscription.destinations.add(destination)
-                    node_subscription.samples_by_destination[destination] = removed_samples
-                    self._raw_metric_nodes.setdefault(destination, set()).add(current_node)
+                self._finalize_stopped_raw_nodes(destination, stopped_nodes)
 
             raise MetricSubscriptionError(
                 f"Failed to unsubscribe from metric '{metric}' in raw mode: {error}"
             ) from error
+
+        with self._lock:
+            self._finalize_stopped_raw_nodes(destination, stopped_nodes)
 
     def _clear_stale_listener_thread(self, thread_name: str) -> None:
         thread_state = self._thread_manager.list_threads().get(thread_name)
@@ -512,6 +522,30 @@ class MetricSubscriptionManager:
             raise MetricSubscriptionError(
                 f"Failed to restart listener '{thread_name}': {error}"
             ) from error
+
+    def _finalize_stopped_raw_nodes(
+        self,
+        destination: str,
+        stopped_nodes: set[str],
+    ) -> None:
+        if not stopped_nodes:
+            return
+
+        raw_metric_nodes = self._raw_metric_nodes.get(destination)
+        for current_node in stopped_nodes:
+            node_subscription = self._raw_node_subscriptions.get(current_node)
+            if node_subscription is None:
+                continue
+
+            node_subscription.samples_by_destination.pop(destination, None)
+            node_subscription.destinations.discard(destination)
+            if raw_metric_nodes is not None:
+                raw_metric_nodes.discard(current_node)
+            if not node_subscription.destinations:
+                self._raw_node_subscriptions.pop(current_node, None)
+
+        if raw_metric_nodes is not None and not raw_metric_nodes:
+            self._raw_metric_nodes.pop(destination, None)
 
     @classmethod
     def _normalize_metric(cls, metric: str) -> str:
@@ -539,7 +573,10 @@ class MetricSubscriptionManager:
         return normalized_nodes
 
     @classmethod
-    def _resolve_raw_nodes(cls, node: list[str] | str) -> list[str]:
+    def _resolve_raw_nodes(
+        cls,
+        node: list[str] | str,
+    ) -> list[str]:
         if isinstance(node, str):
             selector = node.strip().lower()
             if selector == "all":
@@ -554,6 +591,14 @@ class MetricSubscriptionManager:
             return cls._normalize_nodes([node])
 
         return cls._normalize_nodes(node)
+
+    @staticmethod
+    def _resolve_raw_cache_size(cache_size: int | None) -> int:
+        if cache_size is None:
+            return RAW_MAX_SAMPLES_PER_RAW_METRIC
+        if cache_size <= 0:
+            raise ValueError("cache_size must be a positive integer")
+        return cache_size
 
     @classmethod
     def _extract_destination(cls, frame: object) -> str | None:
@@ -627,9 +672,17 @@ def subscribe_metric(metric: str) -> str:
     return _default_metric_subscription_manager.subscribe_metric(metric)
 
 
-def subscribe_metric_raw(metric: str, node: list[str] | str) -> dict[str, str]:
+def subscribe_metric_raw(
+    metric: str,
+    node: list[str] | str,
+    cache_size: int | None = None,
+) -> dict[str, str]:
     """Subscribe to raw metric streams for explicit nodes, ``all`` nodes, or the ``local`` node."""
-    return _default_metric_subscription_manager.subscribe_metric_raw(metric, node)
+    return _default_metric_subscription_manager.subscribe_metric_raw(
+        metric,
+        node,
+        cache_size=cache_size,
+    )
 
 
 def query_metric_values(metric: str, seconds: int) -> list[Any]:

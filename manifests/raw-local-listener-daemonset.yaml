@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: raw-local-listener
+  labels:
+    app: raw-local-listener
+spec:
+  selector:
+    matchLabels:
+      app: raw-local-listener
+  template:
+    metadata:
+      labels:
+        app: raw-local-listener
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: raw-local-listener
+          image: swchmonclient/raw-local-listener:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: STOMP_PORT
+              value: "61610"
+            - name: STOMP_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: stomp-credentials
+                  key: username
+                  optional: true
+            - name: STOMP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: stomp-credentials
+                  key: password
+                  optional: true

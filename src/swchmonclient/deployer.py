@@ -1,6 +1,7 @@
 import os
 from collections.abc import Iterable, Sequence
 from logging import Logger
+from pathlib import Path
 from typing import Any
 
 import yaml
@@ -51,17 +52,68 @@ class K8sDeployer:
         context: str | None,
         in_cluster_fallback: bool,
     ) -> None:
+        if kubeconfig_path is not None:
+            try:
+                config.load_kube_config(config_file=kubeconfig_path, context=context)
+                return
+            except Exception as kubeconfig_error:
+                if not in_cluster_fallback:
+                    raise DeploymentError(f"Unable to load kubeconfig: {kubeconfig_error}") from kubeconfig_error
+                try:
+                    config.load_incluster_config()
+                    return
+                except Exception as incluster_error:
+                    raise DeploymentError(
+                        "Unable to load Kubernetes configuration from kubeconfig or in-cluster environment"
+                    ) from incluster_error
+
         try:
             config.load_kube_config(config_file=kubeconfig_path, context=context)
+            return
         except Exception as kubeconfig_error:
+            for discovered_path in self._discover_kubeconfig_paths():
+                try:
+                    config.load_kube_config(config_file=discovered_path, context=context)
+                    return
+                except Exception:
+                    continue
             if not in_cluster_fallback:
                 raise DeploymentError(f"Unable to load kubeconfig: {kubeconfig_error}") from kubeconfig_error
             try:
                 config.load_incluster_config()
+                return
             except Exception as incluster_error:
                 raise DeploymentError(
                     "Unable to load Kubernetes configuration from kubeconfig or in-cluster environment"
                 ) from incluster_error
+
+    @staticmethod
+    def _discover_kubeconfig_paths() -> list[str]:
+        candidates: list[str] = []
+
+        env_kubeconfig = os.getenv("KUBECONFIG")
+        if env_kubeconfig:
+            candidates.extend(path for path in env_kubeconfig.split(os.pathsep) if path)
+
+        candidates.extend(
+            [
+                "./k3s.yaml",
+                "./kubeconfig",
+                str(Path.home() / "k3s.yaml"),
+                str(Path.home() / ".kube" / "config"),
+            ]
+        )
+
+        discovered: list[str] = []
+        seen_paths: set[str] = set()
+        for candidate in candidates:
+            resolved_candidate = os.path.abspath(os.path.expanduser(candidate))
+            if resolved_candidate in seen_paths or not os.path.isfile(resolved_candidate):
+                continue
+            seen_paths.add(resolved_candidate)
+            discovered.append(resolved_candidate)
+
+        return discovered
 
     def _iter_manifest_documents(self, manifest_path: str) -> Iterable[dict[str, Any]]:
         try:

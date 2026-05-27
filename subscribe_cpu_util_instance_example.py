@@ -21,7 +21,7 @@ POLL_INTERVAL_SECONDS = 5
 
 def main() -> int:
     logging.basicConfig(
-        level=logging.DEBUG,
+        level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
@@ -36,25 +36,24 @@ def main() -> int:
     signal.signal(signal.SIGINT, request_stop)
     signal.signal(signal.SIGTERM, request_stop)
 
-    logging.info("Subscribing to metric %s", METRIC_NAME)
+    logging.info("Subscribing to metric: %s", METRIC_NAME)
     subscribe_metric(METRIC_NAME)
+    logging.info("Subscribing to metric: %s", METRIC_NAME2)
     subscribe_metric(METRIC_NAME2)
 
     started_at = time.time()
     try:
         while not stopping and (time.time() - started_at) < RUN_SECONDS:
-            values = query_metric_values(METRIC_NAME, QUERY_WINDOW_SECONDS)
+            values = query_metric_values(METRIC_NAME)
             logging.info(
-                "Latest buffered value for %s from the last %s seconds: %s",
+                "Latest buffered value for %s: %s",
                 METRIC_NAME,
-                QUERY_WINDOW_SECONDS,
                 values,
             )
-            values2 = query_metric_values(METRIC_NAME2, QUERY_WINDOW_SECONDS)
+            values2 = query_metric_values(METRIC_NAME2)
             logging.info(
-                "Latest buffered value for %s from the last %s seconds: %s",
+                "Latest buffered value for %s: %s",
                 METRIC_NAME2,
-                QUERY_WINDOW_SECONDS,
                 values2,
             )
             time.sleep(POLL_INTERVAL_SECONDS)

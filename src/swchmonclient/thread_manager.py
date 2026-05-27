@@ -1,16 +1,21 @@
 import inspect
+import logging
 import threading
 from dataclasses import dataclass
 from typing import Any, Callable
 
 from .exceptions import ThreadManagementError
-from .listener import run_stomp_listener
+from .listener import StompConnectionController, run_stomp_listener
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
 class _ManagedThread:
     thread: threading.Thread
     stop_event: threading.Event
+    stop_callback: Callable[[], None] | None = None
+    detach_on_timeout: bool = False
 
 
 class MonitoringThreadManager:
@@ -27,6 +32,8 @@ class MonitoringThreadManager:
         target: Callable[..., Any],
         *args: Any,
         daemon: bool = True,
+        stop_callback: Callable[[], None] | None = None,
+        detach_on_timeout: bool = False,
         **kwargs: Any,
     ) -> str:
         with self._lock:
@@ -39,7 +46,12 @@ class MonitoringThreadManager:
                 name=name,
                 daemon=daemon,
             )
-            self._threads[name] = _ManagedThread(thread=thread, stop_event=stop_event)
+            self._threads[name] = _ManagedThread(
+                thread=thread,
+                stop_event=stop_event,
+                stop_callback=stop_callback,
+                detach_on_timeout=detach_on_timeout,
+            )
             thread.start()
             return name
 
@@ -50,9 +62,24 @@ class MonitoringThreadManager:
                 raise ThreadManagementError(f"Thread '{name}' not found")
             managed.stop_event.set()
             thread = managed.thread
+            stop_callback = managed.stop_callback
+            detach_on_timeout = managed.detach_on_timeout
+
+        if stop_callback is not None:
+            stop_callback()
 
         thread.join(timeout)
         if thread.is_alive():
+            if detach_on_timeout:
+                with self._lock:
+                    self._threads.pop(name, None)
+                    self._errors.pop(name, None)
+                logger.warning(
+                    "Thread '%s' did not stop within %s seconds after forced shutdown; detaching it from the manager.",
+                    name,
+                    timeout,
+                )
+                return
             raise ThreadManagementError(
                 f"Thread '{name}' did not stop within {timeout} seconds. "
                 "Ensure your monitoring function cooperates with stop_event."
@@ -82,10 +109,13 @@ class MonitoringThreadManager:
         daemon: bool = True,
     ) -> str:
         """Start the STOMP listener in a managed background thread."""
+        connection_controller = StompConnectionController()
         return self.start_monitoring_thread(
             name,
             run_stomp_listener,
             daemon=daemon,
+            stop_callback=connection_controller.disconnect_active,
+            detach_on_timeout=True,
             host=host,
             port=port,
             username=username,
@@ -96,6 +126,7 @@ class MonitoringThreadManager:
             max_reconnect_delay=max_reconnect_delay,
             connection_factory=connection_factory,
             listener=listener,
+            connection_controller=connection_controller,
         )
 
     def stop_listener_thread(self, name: str = "stomp-listener", timeout: float = 30.0) -> None:

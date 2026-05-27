@@ -66,6 +66,30 @@ Each node/IP keeps up to 1000 cached samples, dropping the oldest entries first 
 
 If you subscribe multiple raw metrics for the same node/IP, the library reuses the same raw listener thread for that node and dynamically subscribes the additional metric topics on that connection.
 
+## Containerized raw local test
+
+This repository includes a Docker image definition and a Kubernetes DaemonSet manifest for running `subscribe_cpu_util_instance_raw_example.py` with the existing `"local"` selector.
+
+Build the image from the repository root:
+
+```bash
+docker build -f docker/Dockerfile-subscribe-cpu-util-raw-local -t swchmonclient/raw-local-listener:latest .
+```
+
+The Kubernetes manifest is:
+
+```text
+manifests/raw-local-listener-daemonset.yaml
+```
+
+It uses `hostNetwork: true` so the `"local"` selector resolves the node IP instead of only the pod IP. Update the image name if you publish it to a registry, then apply it with:
+
+```bash
+kubectl apply -f manifests/raw-local-listener-daemonset.yaml
+```
+
+If your broker requires credentials, create a `stomp-credentials` secret with `username` and `password` keys before deploying.
+
 ## API Reference
 
 ### `deploy_monitoring(kubeconfig_path: str | None, sat_file: str, optimusdb_url: str, logger: logging.Logger | None = None) -> int`
@@ -105,7 +129,7 @@ Starts or reuses the shared standard metric listener for the requested metric to
 
 **Output:** `str` thread name of the shared listener, currently `metric-listener`.
 
-### `subscribe_metric_raw(metric: str, node: list[str] | str) -> dict[str, str]`
+### `subscribe_metric_raw(metric: str, node: list[str] | str, cache_size: int | None = None) -> dict[str, str]`
 
 Starts raw metric listeners that connect directly to node IPs.
 
@@ -113,6 +137,7 @@ Starts raw metric listeners that connect directly to node IPs.
 | --- | --- | --- | --- |
 | `metric` | Yes | `str` | Metric name or full topic destination. Plain names are normalized to `/topic/<metric>`. |
 | `node` | Yes | `list[str] \| str` | Raw node selector. Use an explicit node/IP list, `"all"` for all Kubernetes VM private IPs, or `"local"` for the current machine's private IP. |
+| `cache_size` | No | `int \| None` | Per raw metric per node sample buffer size. If omitted, the default value `1000` is used. |
 
 **Output:** `dict[str, str]` mapping each resolved node/IP to the listener thread name started for it.
 
@@ -120,6 +145,7 @@ Starts raw metric listeners that connect directly to node IPs.
 - Starts one raw listener thread per resolved node/IP and reuses it for additional raw metrics on that same node/IP.
 - Raw subscriptions connect directly to each resolved node/IP instead of `STOMP_HOST`.
 - Mixing `subscribe_metric(...)` and `subscribe_metric_raw(...)` for the same metric is rejected.
+- For `node="all"`, Kubernetes config is resolved automatically from the default kubeconfig, `KUBECONFIG`, common local files such as `./k3s.yaml`, or in-cluster config.
 
 ### `query_metric_values(metric: str, seconds: int) -> list[Any]`
 
@@ -208,6 +234,7 @@ print(thread_name)
 from swchmonclient import subscribe_metric_raw
 
 threads = subscribe_metric_raw("cpu_util_instance", "local")
+# or: subscribe_metric_raw("cpu_util_instance", "local", cache_size=500)
 # or: subscribe_metric_raw("cpu_util_instance", "all")
 # or: subscribe_metric_raw("cpu_util_instance", ["10.0.0.1", "10.0.0.2"])
 print(threads)

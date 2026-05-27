@@ -1,0 +1,15 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+COPY pyproject.toml README.md LICENSE ./
+COPY src ./src
+COPY subscribe_cpu_util_instance_raw_example.py ./subscribe_cpu_util_instance_raw_example.py
+
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir .
+
+CMD ["python", "subscribe_cpu_util_instance_raw_example.py"]
