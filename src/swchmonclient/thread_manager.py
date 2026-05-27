@@ -1,7 +1,7 @@
 import inspect
 import threading
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable
 
 from .exceptions import ThreadManagementError
 from .listener import run_stomp_listener
@@ -17,8 +17,8 @@ class MonitoringThreadManager:
     """Create, track, and stop cooperative monitoring threads."""
 
     def __init__(self) -> None:
-        self._threads: Dict[str, _ManagedThread] = {}
-        self._errors: Dict[str, Exception] = {}
+        self._threads: dict[str, _ManagedThread] = {}
+        self._errors: dict[str, Exception] = {}
         self._lock = threading.Lock()
 
     def start_monitoring_thread(
@@ -69,14 +69,16 @@ class MonitoringThreadManager:
         self,
         name: str = "stomp-listener",
         *,
-        host: Optional[str] = None,
-        port: Optional[int] = None,
-        username: Optional[str] = None,
-        password: Optional[str] = None,
-        destination: Optional[str] = None,
-        reconnect_delay: Optional[int] = None,
-        max_reconnect_delay: Optional[int] = None,
-        connection_factory: Optional[Callable[[str, int], object]] = None,
+        host: str | None = None,
+        port: int | None = None,
+        username: str | None = None,
+        password: str | None = None,
+        destination: str | None = None,
+        destinations_provider: Callable[[], set[str]] | None = None,
+        reconnect_delay: int | None = None,
+        max_reconnect_delay: int | None = None,
+        connection_factory: Callable[[str, int], object] | None = None,
+        listener: object | None = None,
         daemon: bool = True,
     ) -> str:
         """Start the STOMP listener in a managed background thread."""
@@ -89,9 +91,11 @@ class MonitoringThreadManager:
             username=username,
             password=password,
             destination=destination,
+            destinations_provider=destinations_provider,
             reconnect_delay=reconnect_delay,
             max_reconnect_delay=max_reconnect_delay,
             connection_factory=connection_factory,
+            listener=listener,
         )
 
     def stop_listener_thread(self, name: str = "stomp-listener", timeout: float = 30.0) -> None:
@@ -102,7 +106,7 @@ class MonitoringThreadManager:
         for name in list(self.list_threads()):
             self.stop_monitoring_thread(name, timeout=timeout_per_thread)
 
-    def list_threads(self) -> Dict[str, bool]:
+    def list_threads(self) -> dict[str, bool]:
         with self._lock:
             return {name: managed.thread.is_alive() for name, managed in self._threads.items()}
 

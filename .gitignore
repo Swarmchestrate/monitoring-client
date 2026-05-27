@@ -3,6 +3,7 @@ __pycache__/
 *.so
 .Python
 .venv/
+.env
 .pytest_cache/
 .coverage
 htmlcov/

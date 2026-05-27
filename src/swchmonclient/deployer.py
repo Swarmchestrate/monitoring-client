@@ -1,10 +1,11 @@
 import os
+from collections.abc import Iterable, Sequence
 from logging import Logger
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any
 
 import yaml
 from kubernetes import config, dynamic
-from kubernetes.client import ApiClient
+from kubernetes.client import ApiClient, CoreV1Api
 from kubernetes.client.exceptions import ApiException
 
 from .exceptions import DeploymentError
@@ -35,18 +36,19 @@ class K8sDeployer:
 
     def __init__(
         self,
-        kubeconfig_path: Optional[str] = None,
-        context: Optional[str] = None,
+        kubeconfig_path: str | None = None,
+        context: str | None = None,
         in_cluster_fallback: bool = True,
     ) -> None:
         self._load_config(kubeconfig_path=kubeconfig_path, context=context, in_cluster_fallback=in_cluster_fallback)
         self.api_client = ApiClient()
+        self.core_v1_api = CoreV1Api(self.api_client)
         self.dynamic_client = dynamic.DynamicClient(self.api_client)
 
     def _load_config(
         self,
-        kubeconfig_path: Optional[str],
-        context: Optional[str],
+        kubeconfig_path: str | None,
+        context: str | None,
         in_cluster_fallback: bool,
     ) -> None:
         try:
@@ -61,7 +63,7 @@ class K8sDeployer:
                     "Unable to load Kubernetes configuration from kubeconfig or in-cluster environment"
                 ) from incluster_error
 
-    def _iter_manifest_documents(self, manifest_path: str) -> Iterable[Dict[str, Any]]:
+    def _iter_manifest_documents(self, manifest_path: str) -> Iterable[dict[str, Any]]:
         try:
             with open(manifest_path, "r", encoding="utf-8") as handle:
                 documents = list(yaml.safe_load_all(handle))
@@ -74,15 +76,15 @@ class K8sDeployer:
             if isinstance(document, dict) and document.get("kind") and document.get("apiVersion"):
                 yield document
 
-    def _resource_from_doc(self, document: Dict[str, Any]):
+    def _resource_from_doc(self, document: dict[str, Any]):
         return self.dynamic_client.resources.get(
             api_version=document["apiVersion"],
             kind=document["kind"],
         )
 
-    def deploy_manifest(self, manifest_path: str, namespace: Optional[str] = None) -> List[Dict[str, str]]:
+    def deploy_manifest(self, manifest_path: str, namespace: str | None = None) -> list[dict[str, str]]:
         """Create or patch resources from a manifest file and return resource references."""
-        deployed: List[Dict[str, str]] = []
+        deployed: list[dict[str, str]] = []
 
         for document in self._iter_manifest_documents(manifest_path):
             resource = self._resource_from_doc(document)
@@ -134,7 +136,7 @@ class K8sDeployer:
 
         return deployed
 
-    def destroy_manifest(self, manifest_path: str, namespace: Optional[str] = None) -> int:
+    def destroy_manifest(self, manifest_path: str, namespace: str | None = None) -> int:
         """Delete resources listed in the given manifest file."""
         deleted = 0
 
@@ -169,7 +171,7 @@ class K8sDeployer:
         api_version: str,
         kind: str,
         name: str,
-        namespace: Optional[str] = None,
+        namespace: str | None = None,
     ) -> int:
         """Delete a single named resource and return 1 if it was deleted, else 0."""
         try:
@@ -194,7 +196,7 @@ class K8sDeployer:
         self,
         label_selector: str,
         namespace: str = "default",
-        kinds: Optional[List[Tuple[str, str]]] = None,
+        kinds: list[tuple[str, str]] | None = None,
     ) -> int:
         """Delete resources matching a label selector in a namespace."""
         default_kinds = [
@@ -238,15 +240,40 @@ class K8sDeployer:
 
         return deleted
 
+    def get_vm_private_ips(self) -> list[str]:
+        """Return Kubernetes node InternalIP addresses in API order, without duplicates."""
+        try:
+            nodes = self.core_v1_api.list_node().items
+        except ApiException as error:
+            raise DeploymentError(f"Failed to list Kubernetes nodes: {error.reason}") from error
+        except Exception as error:
+            raise DeploymentError(f"Failed to list Kubernetes nodes: {error}") from error
+
+        private_ips: list[str] = []
+        seen_ips: set[str] = set()
+        for node in nodes:
+            addresses = getattr(getattr(node, "status", None), "addresses", []) or []
+            for address in addresses:
+                if getattr(address, "type", None) != "InternalIP":
+                    continue
+                ip = getattr(address, "address", None)
+                if not isinstance(ip, str) or not ip or ip in seen_ips:
+                    continue
+                seen_ips.add(ip)
+                private_ips.append(ip)
+                break
+
+        return private_ips
+
 
 def _resolve_manifests_with_optional_render(
     manifests: Sequence[str],
-    template_manifest_path: Optional[str] = None,
-    template_variables: Optional[Dict[str, str]] = None,
-):
+    template_manifest_path: str | None = None,
+    template_variables: dict[str, str] | None = None,
+) -> tuple[list[dict[str, Any]], str | None]:
     from .renderer import render_manifest
 
-    rendered_template_path: Optional[str] = None
+    rendered_template_path: str | None = None
     manifest_variables = template_variables or {}
 
     if template_manifest_path:
@@ -266,11 +293,11 @@ def _resolve_manifests_with_optional_render(
 
 def _deploy_manifests_with_optional_render(
     manifests: Sequence[str],
-    kubeconfig_path: Optional[str] = None,
-    context: Optional[str] = None,
-    template_manifest_path: Optional[str] = None,
-    template_variables: Optional[Dict[str, str]] = None,
-    logger: Optional[Logger] = None,
+    kubeconfig_path: str | None = None,
+    context: str | None = None,
+    template_manifest_path: str | None = None,
+    template_variables: dict[str, str] | None = None,
+    logger: Logger | None = None,
     logger_name: str = "swchmonclient.deploy",
 ) -> int:
     """Deploy manifests and optionally render one manifest before deployment.
@@ -283,7 +310,7 @@ def _deploy_manifests_with_optional_render(
     active_logger = logger or configure_stdout_logger(logger_name)
     deployer = K8sDeployer(kubeconfig_path=kubeconfig_path, context=context)
     overall_ok = True
-    rendered_template_path: Optional[str] = None
+    rendered_template_path: str | None = None
 
     try:
         resolved_manifests, rendered_template_path = _resolve_manifests_with_optional_render(
@@ -339,12 +366,13 @@ def _deploy_manifests_with_optional_render(
 
 def _undeploy_manifests_with_optional_render(
     manifests: Sequence[str],
-    kubeconfig_path: Optional[str] = None,
-    context: Optional[str] = None,
-    template_manifest_path: Optional[str] = None,
-    template_variables: Optional[Dict[str, str]] = None,
-    extra_resources_to_delete: Sequence[Tuple[str, str, str, str]] = (),
-    logger: Optional[Logger] = None,
+    kubeconfig_path: str | None = None,
+    context: str | None = None,
+    namespace: str | None = None,
+    template_manifest_path: str | None = None,
+    template_variables: dict[str, str] | None = None,
+    extra_resources_to_delete: Sequence[tuple[str, str, str, str]] = (),
+    logger: Logger | None = None,
     logger_name: str = "swchmonclient.undeploy",
 ) -> int:
     from .logging_utils import configure_stdout_logger
@@ -352,7 +380,7 @@ def _undeploy_manifests_with_optional_render(
     active_logger = logger or configure_stdout_logger(logger_name)
     deployer = K8sDeployer(kubeconfig_path=kubeconfig_path, context=context)
     overall_ok = True
-    rendered_template_path: Optional[str] = None
+    rendered_template_path: str | None = None
 
     try:
         resolved_manifests, rendered_template_path = _resolve_manifests_with_optional_render(
@@ -374,7 +402,7 @@ def _undeploy_manifests_with_optional_render(
                 active_logger.info("Undeploying %s ...", display_path)
 
             try:
-                deleted = deployer.destroy_manifest(manifest_path)
+                deleted = deployer.destroy_manifest(manifest_path, namespace=namespace)
                 active_logger.info("  Done. %s resource(s) deleted.", deleted)
             except DeploymentError as error:
                 active_logger.error("  ERROR: %s", error)
@@ -387,7 +415,7 @@ def _undeploy_manifests_with_optional_render(
                     api_version=api_version,
                     kind=kind,
                     name=name,
-                    namespace=DEFAULT_MONITORING_NAMESPACE,
+                    namespace=namespace or DEFAULT_MONITORING_NAMESPACE,
                 )
                 active_logger.info("  Done. %s %s resource(s) deleted.", deleted, resource_label)
             except DeploymentError as error:
@@ -406,10 +434,10 @@ def _undeploy_manifests_with_optional_render(
 
 
 def deploy_monitoring(
-    kubeconfig_path: Optional[str],
+    kubeconfig_path: str | None,
     sat_file: str,
     optimusdb_url: str,
-    logger: Optional[Logger] = None,
+    logger: Logger | None = None,
 ) -> int:
     """Deploy the standard monitoring stack manifests."""
     return _deploy_manifests_with_optional_render(
@@ -426,15 +454,17 @@ def deploy_monitoring(
 
 
 def undeploy_monitoring(
-    kubeconfig_path: Optional[str],
+    kubeconfig_path: str | None,
     sat_file: str,
     optimusdb_url: str,
-    logger: Optional[Logger] = None,
+    namespace: str | None = None,
+    logger: Logger | None = None,
 ) -> int:
     """Undeploy the standard monitoring stack manifests and cleanup resources."""
     return _undeploy_manifests_with_optional_render(
         manifests=MONITORING_UNDEPLOY_MANIFESTS,
         kubeconfig_path=kubeconfig_path,
+        namespace=namespace,
         template_manifest_path=MONITORING_TEMPLATE_MANIFEST,
         template_variables={
             "sat_file": sat_file,
@@ -444,3 +474,12 @@ def undeploy_monitoring(
         logger=logger,
         logger_name="swchmonclient.undeploy_monitoring",
     )
+
+
+def get_vm_private_ips(
+    kubeconfig_path: str | None = None,
+    context: str | None = None,
+) -> list[str]:
+    """Load Kubernetes config and return the cluster nodes' private IP addresses."""
+    deployer = K8sDeployer(kubeconfig_path=kubeconfig_path, context=context)
+    return deployer.get_vm_private_ips()

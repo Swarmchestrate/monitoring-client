@@ -4,3 +4,7 @@ class DeploymentError(Exception):
 
 class ThreadManagementError(Exception):
     """Raised when thread lifecycle operations fail."""
+
+
+class MetricSubscriptionError(Exception):
+    """Raised when metric subscription lifecycle operations fail."""
