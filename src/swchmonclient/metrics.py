@@ -1,4 +1,5 @@
 import json
+import logging
 import socket
 import threading
 import time
@@ -11,6 +12,8 @@ from .deployer import get_vm_private_ips
 from .exceptions import MetricSubscriptionError, ThreadManagementError
 from .listener import CallbackStompListener
 from .thread_manager import MonitoringThreadManager
+
+logger = logging.getLogger(__name__)
 
 MAX_SAMPLES_PER_METRIC = 1
 RAW_MAX_SAMPLES_PER_RAW_METRIC = 1000
@@ -164,6 +167,13 @@ class MetricSubscriptionManager:
         destination = self._normalize_metric(metric)
         normalized_nodes = self._resolve_raw_nodes(node)
         resolved_cache_size = self._resolve_raw_cache_size(cache_size)
+        if isinstance(node, str) and node.strip().lower() in {"all", "local"}:
+            logger.info(
+                "Subscribing to raw metric '%s' using node selector '%s' resolved to nodes %s",
+                metric,
+                node.strip().lower(),
+                normalized_nodes,
+            )
 
         with self._lock:
             if destination in self._subscriptions:
