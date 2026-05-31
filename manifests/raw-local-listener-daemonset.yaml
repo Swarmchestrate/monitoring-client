@@ -15,10 +15,12 @@ spec:
     spec:
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
+      imagePullSecrets:
+        - name: registry-credentials
       containers:
         - name: raw-local-listener
-          image: swchmonclient/raw-local-listener:latest
-          imagePullPolicy: IfNotPresent
+          image: cloud-193-225-250-99.sztaki.science-cloud.hu/swarchestrate/mon_lib:test
+          imagePullPolicy: Always
           env:
             - name: STOMP_PORT
               value: "61610"

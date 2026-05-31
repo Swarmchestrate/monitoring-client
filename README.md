@@ -68,7 +68,7 @@ If you subscribe multiple raw metrics for the same node/IP, the library reuses t
 
 ## Containerized raw local test
 
-This repository includes a Docker image definition and a Kubernetes DaemonSet manifest for running `subscribe_cpu_util_instance_raw_example.py` with the existing `"local"` selector.
+This repository includes a Docker image definition and a Kubernetes DaemonSet manifest for running `examples/subscribe_cpu_util_instance_raw_example.py` with the existing `"local"` selector.
 
 Build the image from the repository root:
 
@@ -82,7 +82,22 @@ The Kubernetes manifest is:
 manifests/raw-local-listener-daemonset.yaml
 ```
 
-It uses `hostNetwork: true` so the `"local"` selector resolves the node IP instead of only the pod IP. Update the image name if you publish it to a registry, then apply it with:
+It uses `hostNetwork: true` so the `"local"` selector resolves the node IP instead of only the pod IP. The manifest is configured to pull the image from:
+
+```text
+cloud-193-225-250-99.sztaki.science-cloud.hu/swarchestrate/mon_lib:test
+```
+
+Before applying it, create the `registry-credentials` pull secret in the target namespace:
+
+```bash
+kubectl create secret docker-registry registry-credentials \
+  --docker-server=cloud-193-225-250-99.sztaki.science-cloud.hu \
+  --docker-username='<username>' \
+  --docker-password='<password>'
+```
+
+Then apply the DaemonSet:
 
 ```bash
 kubectl apply -f manifests/raw-local-listener-daemonset.yaml
@@ -298,16 +313,4 @@ If the service is not in `default`, pass the namespace explicitly:
 
 ```bash
 ./scripts/port-forward-emsserver.sh monitoring
-```
-
-## Publish to PyPI
-
-```bash
-uv publish
-```
-
-To test first:
-
-```bash
-uv publish --repository testpypi
 ```

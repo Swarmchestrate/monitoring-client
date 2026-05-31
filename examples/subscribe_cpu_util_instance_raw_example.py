@@ -7,7 +7,7 @@ from pathlib import Path
 from swchmonclient.deployer import K8sDeployer
 
 # Allow running this script directly from the repo root without installing the package.
-REPO_ROOT = Path(__file__).resolve().parent
+REPO_ROOT = Path(__file__).resolve().parent.parent
 SRC_PATH = REPO_ROOT / "src"
 if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
@@ -41,7 +41,8 @@ def main() -> int:
 
     logging.info("Subscribing to raw metric %s for nodes %s", METRIC_NAME, NODES)
     # thread_names = subscribe_metric_raw(METRIC_NAME, NODES)
-    thread_names = subscribe_metric_raw(METRIC_NAME, "local")
+    # thread_names = subscribe_metric_raw(METRIC_NAME, "local")
+    thread_names = subscribe_metric_raw(METRIC_NAME, "all")
     logging.info("Started raw listener threads: %s", thread_names)
 
     started_at = time.time()
