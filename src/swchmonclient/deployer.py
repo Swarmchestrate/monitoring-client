@@ -2,7 +2,10 @@ import os
 from collections.abc import Iterable, Sequence
 from logging import Logger
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import Any
+from urllib.error import URLError
+from urllib.request import urlopen
 
 import yaml
 from kubernetes import config, dynamic
@@ -18,11 +21,8 @@ MONITORING_DEPLOY_MANIFESTS = (
     "./manifests/ems+netdata-k3s_parametric.yaml",
 )
 MONITORING_UNDEPLOY_MANIFESTS = (
-    "./manifests/custom-metric-config.yaml",
     MONITORING_TEMPLATE_MANIFEST,
     "./manifests/ems+netdata-k3s_parametric.yaml",
-    "./manifests/stomp-listener.yaml",
-    "./manifests/python_manifest.yaml",
 )
 MONITORING_EXTRA_RESOURCES_TO_DELETE = (
     ("apps/v1", "DaemonSet", "ems-client-daemonset", "daemonset"),
@@ -30,6 +30,15 @@ MONITORING_EXTRA_RESOURCES_TO_DELETE = (
     ("v1", "ConfigMap", "monitoring-configmap", "configmap"),
 )
 DEFAULT_MONITORING_NAMESPACE = "default"
+MANIFEST_DOWNLOAD_TIMEOUT_SECONDS = 30
+MONITORING_MANIFEST_RELEASE_URLS = {
+    MONITORING_TEMPLATE_MANIFEST: (
+        "https://github.com/Swarmchestrate/monitoring-client/releases/download/v0.1.0/emsconfig.yaml"
+    ),
+    "./manifests/ems+netdata-k3s_parametric.yaml": (
+        "https://github.com/Swarmchestrate/monitoring-client/releases/download/v0.1.0/ems+netdata-k3s_parametric.yaml"
+    ),
+}
 
 
 class K8sDeployer:
@@ -343,6 +352,57 @@ def _resolve_manifests_with_optional_render(
     return resolved_manifests, rendered_template_path
 
 
+def _fetch_manifest_release_bytes(url: str) -> bytes:
+    try:
+        with urlopen(url, timeout=MANIFEST_DOWNLOAD_TIMEOUT_SECONDS) as response:
+            return response.read()
+    except URLError as error:
+        raise DeploymentError(f"Unable to download manifest from {url}: {error}") from error
+
+
+def _write_manifest_file(manifest_path: str, content: bytes) -> None:
+    destination = Path(manifest_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    with NamedTemporaryFile(dir=destination.parent, delete=False) as temp_file:
+        temp_file.write(content)
+        temp_path = temp_file.name
+
+    os.replace(temp_path, destination)
+
+
+def _ensure_monitoring_manifest(manifest_path: str, logger: Logger) -> None:
+    release_url = MONITORING_MANIFEST_RELEASE_URLS[manifest_path]
+    release_content: bytes | None = None
+
+    if os.path.exists(manifest_path):
+        logger.info("Found local manifest %s.", manifest_path)
+        try:
+            with open(manifest_path, "rb") as local_manifest:
+                local_content = local_manifest.read()
+        except OSError as error:
+            raise DeploymentError(f"Unable to read local manifest {manifest_path}: {error}") from error
+
+        release_content = _fetch_manifest_release_bytes(release_url)
+        if local_content == release_content:
+            logger.info("Local manifest %s matches release asset.", manifest_path)
+        else:
+            logger.warning("Local manifest %s differs from release asset %s.", manifest_path, release_url)
+            _write_manifest_file(manifest_path, release_content)
+            logger.info("Downloaded updated manifest to %s.", manifest_path)
+        return
+
+    logger.info("Local manifest %s not found. Downloading from %s ...", manifest_path, release_url)
+    release_content = _fetch_manifest_release_bytes(release_url)
+    _write_manifest_file(manifest_path, release_content)
+    logger.info("Downloaded manifest to %s.", manifest_path)
+
+
+def _ensure_monitoring_manifests(logger: Logger) -> None:
+    for manifest_path in MONITORING_MANIFEST_RELEASE_URLS:
+        _ensure_monitoring_manifest(manifest_path, logger)
+
+
 def _deploy_manifests_with_optional_render(
     manifests: Sequence[str],
     kubeconfig_path: str | None = None,
@@ -492,6 +552,15 @@ def deploy_monitoring(
     logger: Logger | None = None,
 ) -> int:
     """Deploy the standard monitoring stack manifests."""
+    from .logging_utils import configure_stdout_logger
+
+    active_logger = logger or configure_stdout_logger("swchmonclient.deploy_monitoring")
+    try:
+        _ensure_monitoring_manifests(active_logger)
+    except DeploymentError as error:
+        active_logger.error("  ERROR: %s", error)
+        active_logger.info("One or more manifests failed to deploy.")
+        return 1
     return _deploy_manifests_with_optional_render(
         manifests=MONITORING_DEPLOY_MANIFESTS,
         kubeconfig_path=kubeconfig_path,
@@ -500,7 +569,7 @@ def deploy_monitoring(
             "sat_file": sat_file,
             "optimusdb_url": optimusdb_url,
         },
-        logger=logger,
+        logger=active_logger,
         logger_name="swchmonclient.deploy_monitoring",
     )
 
@@ -513,6 +582,15 @@ def undeploy_monitoring(
     logger: Logger | None = None,
 ) -> int:
     """Undeploy the standard monitoring stack manifests and cleanup resources."""
+    from .logging_utils import configure_stdout_logger
+
+    active_logger = logger or configure_stdout_logger("swchmonclient.undeploy_monitoring")
+    try:
+        _ensure_monitoring_manifests(active_logger)
+    except DeploymentError as error:
+        active_logger.error("  ERROR: %s", error)
+        active_logger.info("One or more manifests failed to undeploy.")
+        return 1
     return _undeploy_manifests_with_optional_render(
         manifests=MONITORING_UNDEPLOY_MANIFESTS,
         kubeconfig_path=kubeconfig_path,
@@ -523,7 +601,7 @@ def undeploy_monitoring(
             "optimusdb_url": optimusdb_url,
         },
         extra_resources_to_delete=MONITORING_EXTRA_RESOURCES_TO_DELETE,
-        logger=logger,
+        logger=active_logger,
         logger_name="swchmonclient.undeploy_monitoring",
     )
 

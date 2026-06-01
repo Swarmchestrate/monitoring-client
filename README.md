@@ -1,12 +1,22 @@
 # swchmonclient
 
-A small Python library for deploying the monitoring stack and consuming metric events over STOMP.
+A Python library for deploying the monitoring stack and consuming metric events over STOMP in the Swarmchestrate project.
 
 ## Install
 
 ```bash
+pip install swchmonclient
 uv add swchmonclient
 ```
+
+## Overview
+
+- Metrics defined in the SAT are monitored by EMS.
+- Composite metrics and SLOs are consumed from the central EPM.
+- Raw metrics can be consumed from the local EPA, an explicit list of nodes, or all nodes discovered from Kubernetes.
+- The library buffers metric values until `query_metric_values(...)` or `query_metric_values_raw(...)` is called.
+- Returned samples are consumed from the in-memory buffers.
+
 
 ## Quick Example
 
@@ -62,54 +72,17 @@ The returned structure is grouped by node/IP:
 }
 ```
 
-Each node/IP keeps up to 1000 cached samples, dropping the oldest entries first when the buffer fills.
+Each raw metric on each node/IP keeps up to 1000 cached samples, dropping the oldest entries first when the buffer fills.
 
 If you subscribe multiple raw metrics for the same node/IP, the library reuses the same raw listener thread for that node and dynamically subscribes the additional metric topics on that connection.
-
-## Containerized raw local test
-
-This repository includes a Docker image definition and a Kubernetes DaemonSet manifest for running `examples/subscribe_cpu_util_instance_raw_example.py` with the existing `"local"` selector.
-
-Build the image from the repository root:
-
-```bash
-docker build -f docker/Dockerfile-subscribe-cpu-util-raw-local -t swchmonclient/raw-local-listener:latest .
-```
-
-The Kubernetes manifest is:
-
-```text
-manifests/raw-local-listener-daemonset.yaml
-```
-
-It uses `hostNetwork: true` so the `"local"` selector resolves the node IP instead of only the pod IP. The manifest is configured to pull the image from:
-
-```text
-cloud-193-225-250-99.sztaki.science-cloud.hu/swarchestrate/mon_lib:test
-```
-
-Before applying it, create the `registry-credentials` pull secret in the target namespace:
-
-```bash
-kubectl create secret docker-registry registry-credentials \
-  --docker-server=cloud-193-225-250-99.sztaki.science-cloud.hu \
-  --docker-username='<username>' \
-  --docker-password='<password>'
-```
-
-Then apply the DaemonSet:
-
-```bash
-kubectl apply -f manifests/raw-local-listener-daemonset.yaml
-```
-
-If your broker requires credentials, create a `stomp-credentials` secret with `username` and `password` keys before deploying.
 
 ## API Reference
 
 ### `deploy_monitoring(kubeconfig_path: str | None, sat_file: str, optimusdb_url: str, logger: logging.Logger | None = None) -> int`
 
 Deploys the standard monitoring stack manifests.
+
+If `./manifests/emsconfig.yaml` or `./manifests/ems+netdata-k3s_parametric.yaml` is missing locally, the library downloads it from the `v0.1.0` release assets before deployment. When a local copy already exists, it validates the content against the release asset, logs whether it matches, and replaces the file if it differs.
 
 | Parameter | Required | Type | Description |
 | --- | --- | --- | --- |
@@ -123,6 +96,8 @@ Deploys the standard monitoring stack manifests.
 ### `undeploy_monitoring(kubeconfig_path: str | None, sat_file: str, optimusdb_url: str, namespace: str | None = None, logger: logging.Logger | None = None) -> int`
 
 Undeploys the standard monitoring stack manifests and the related cleanup resources.
+
+Like deployment, undeploy ensures the two required monitoring manifests are available locally, logs whether existing local copies match the published release assets, and refreshes differing files from the release.
 
 | Parameter | Required | Type | Description |
 | --- | --- | --- | --- |
@@ -210,6 +185,15 @@ Stops metric listeners or removes node-specific subscriptions, depending on the 
 - Standard metric + `nodes`: keep the listener running, but ignore future samples from those nodes.
 - Raw metric + no `nodes`: stop all raw listeners for that metric.
 - Raw metric + `nodes`: stop only the listed raw node/IP listeners and remove their cached data buckets.
+
+## Examples
+
+Runnable examples are available under `examples/`:
+
+- `examples/deploy_example.py`
+- `examples/undeploy_example.py`
+- `examples/subscribe_cpu_util_instance_example.py`
+- `examples/subscribe_cpu_util_instance_raw_example.py`
 
 ## Simple Snippets
 

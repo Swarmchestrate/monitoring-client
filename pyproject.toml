@@ -1,12 +1,12 @@
 [project]
 name = "swchmonclient"
-version = "0.1.0"
+version = "0.1.1"
 description = "Kubernetes manifest deploy, readiness monitoring, threaded exporter integration, and cleanup tooling."
 readme = "README.md"
 requires-python = ">=3.12"
 license = {text = "Apache-2.0"}
 authors = [
-  {name = "Márk Emődi", email = "mark.emodi@sztaki.hun-ren.hu"}
+  {name = "Márk Emődi", email = "mark.emodi@sztaki.hu"}
 ]
 classifiers = [
   "Programming Language :: Python :: 3",
