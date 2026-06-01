@@ -270,24 +270,14 @@ class MetricSubscriptionManager:
     def query_metric_values(
         self,
         metric: str,
-        seconds: int,
     ) -> list[Any]:
         destination = self._normalize_metric(metric)
-        if seconds < 0:
-            raise ValueError("seconds must be non-negative")
-
-        cutoff = time.time() - seconds
         with self._lock:
             subscription = self._subscriptions.get(destination)
             if subscription is None:
                 raise MetricSubscriptionError(f"Metric '{metric}' is not subscribed")
-            matching_samples = [
-                sample for sample in subscription.samples if sample.timestamp >= cutoff
-            ]
-            remaining_samples = [
-                sample for sample in subscription.samples if sample.timestamp < cutoff
-            ]
-            subscription.samples = deque(remaining_samples, maxlen=MAX_SAMPLES_PER_METRIC)
+            matching_samples = list(subscription.samples)
+            subscription.samples = deque(maxlen=MAX_SAMPLES_PER_METRIC)
 
         return [sample.value for sample in matching_samples]
 
@@ -695,9 +685,9 @@ def subscribe_metric_raw(
     )
 
 
-def query_metric_values(metric: str, seconds: int) -> list[Any]:
-    """Return and consume metric values received within the last ``seconds`` seconds."""
-    return _default_metric_subscription_manager.query_metric_values(metric, seconds)
+def query_metric_values(metric: str) -> list[Any]:
+    """Return and consume all buffered metric values for ``metric``."""
+    return _default_metric_subscription_manager.query_metric_values(metric)
 
 
 def query_metric_values_raw(

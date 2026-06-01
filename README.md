@@ -33,7 +33,7 @@ from swchmonclient import (
 
 deploy_monitoring("./k3s.yaml", "tosca_metrics_ze.yaml", "http://optimusdb.example/swarmkb")
 subscribe_metric("/topic/mysample_metric")
-recent_values = query_metric_values("/topic/mysample_metric", seconds=60)
+recent_values = query_metric_values("/topic/mysample_metric")
 subscribe_metric_raw("/topic/myraw_metric", ["10.0.0.1", "10.0.0.2"])
 subscribe_metric_raw("/topic/myraw_metric", "all")
 subscribe_metric_raw("/topic/myraw_metric", "local")
@@ -133,19 +133,17 @@ Starts raw metric listeners that connect directly to node IPs.
 
 **Notes:**
 - Starts one raw listener thread per resolved node/IP and reuses it for additional raw metrics on that same node/IP.
-- Raw subscriptions connect directly to each resolved node/IP instead of `STOMP_HOST`.
+- Raw subscriptions connect directly to each resolved node/IP instead of `MON_CLIENT_STOMP_HOST`.
 - Mixing `subscribe_metric(...)` and `subscribe_metric_raw(...)` for the same metric is rejected.
-- For `node="all"`, Kubernetes config is resolved automatically from the default kubeconfig, `KUBECONFIG`, common local files such as `./k3s.yaml`, or in-cluster config.
+- For `node="all"`, Kubernetes config is resolved automatically from the default kubeconfig, `MON_CLIENT_KUBECONFIG`, common local files such as `./k3s.yaml`, or in-cluster config.
 
-### `query_metric_values(metric: str, seconds: int) -> list[Any]`
+### `query_metric_values(metric: str) -> list[Any]`
 
-Returns buffered metric values received within the last `seconds` seconds and consumes those returned samples.
+Returns all currently buffered metric values for the metric and consumes those returned samples.
 
 | Parameter | Required | Type | Description |
 | --- | --- | --- | --- |
 | `metric` | Yes | `str` | Metric name or full topic destination. |
-| `seconds` | Yes | `int` | Time window to read from. Must be non-negative. |
-
 ```python
 [42.0, 41.7]
 ```
@@ -244,7 +242,7 @@ print(threads)
 ```python
 from swchmonclient import query_metric_values
 
-standard_values = query_metric_values("cpu_util_instance", seconds=60)
+standard_values = query_metric_values("cpu_util_instance")
 ```
 
 ### `query_metric_values_raw`
