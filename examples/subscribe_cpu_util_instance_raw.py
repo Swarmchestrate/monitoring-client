@@ -1,17 +1,6 @@
 import logging
 import signal
-import sys
 import time
-from pathlib import Path
-
-from swchmonclient.deployer import K8sDeployer
-
-# Allow running this script directly from the repo root without installing the package.
-REPO_ROOT = Path(__file__).resolve().parent.parent
-SRC_PATH = REPO_ROOT / "src"
-if str(SRC_PATH) not in sys.path:
-    sys.path.insert(0, str(SRC_PATH))
-
 from swchmonclient import query_metric_values_raw, subscribe_metric_raw, unsubscribe_metric
 
 METRIC_NAME = "cpu_util_instance"
@@ -39,7 +28,8 @@ def main() -> int:
     signal.signal(signal.SIGINT, request_stop)
     signal.signal(signal.SIGTERM, request_stop)
 
-    logging.info("Subscribing to raw metric %s for nodes %s", METRIC_NAME, NODES)
+    # Subscribe to the raw metric for the specified nodes (or "local" or "all")
+    # logging.info("Subscribing to raw metric %s for nodes %s", METRIC_NAME, NODES)
     # thread_names = subscribe_metric_raw(METRIC_NAME, NODES)
     # thread_names = subscribe_metric_raw(METRIC_NAME, "local")
     thread_names = subscribe_metric_raw(METRIC_NAME, "all")
@@ -64,17 +54,7 @@ def main() -> int:
         unsubscribe_metric(METRIC_NAME)
         logging.info("Raw metric subscription stopped")
 
-    # time.sleep(30)
-    # values_by_node = query_metric_values_raw(
-    #     METRIC_NAME,
-    #     QUERY_WINDOW_SECONDS,
-    # )
-    # logging.info(
-    #     "Buffered raw values for %s from the last %s seconds: %s",
-    #     METRIC_NAME,
-    #     QUERY_WINDOW_SECONDS,
-    #     values_by_node,
-    # )
+
     unsubscribe_metric(METRIC_NAME)
 
     return 0
