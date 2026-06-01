@@ -22,15 +22,15 @@ spec:
           image: cloud-193-225-250-99.sztaki.science-cloud.hu/swarchestrate/mon_lib:test
           imagePullPolicy: Always
           env:
-            - name: STOMP_PORT
+            - name: MON_CLIENT_STOMP_PORT
               value: "61610"
-            - name: STOMP_USERNAME
+            - name: MON_CLIENT_STOMP_USERNAME
               valueFrom:
                 secretKeyRef:
                   name: stomp-credentials
                   key: username
                   optional: true
-            - name: STOMP_PASSWORD
+            - name: MON_CLIENT_STOMP_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: stomp-credentials

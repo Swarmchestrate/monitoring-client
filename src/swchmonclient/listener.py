@@ -141,18 +141,20 @@ def run_stomp_listener(
 ) -> None:
     """Run a reconnecting STOMP listener until the provided stop event is set."""
     resolved_stop_event = stop_event or threading.Event()
-    resolved_host = host or get_env("STOMP_HOST", "emsserver-ems-server")
-    resolved_port = port if port is not None else get_int_env("STOMP_PORT", 61610)
-    resolved_username = username if username is not None else get_env("STOMP_USERNAME", "")
-    resolved_password = password if password is not None else get_env("STOMP_PASSWORD", "")
-    resolved_destination = destination or get_env("STOMP_DESTINATION", "/topic/>")
+    resolved_host = host or get_env("MON_CLIENT_STOMP_HOST", "emsserver-ems-server")
+    resolved_port = port if port is not None else get_int_env("MON_CLIENT_STOMP_PORT", 61610)
+    resolved_username = username if username is not None else get_env("MON_CLIENT_STOMP_USERNAME", "")
+    resolved_password = password if password is not None else get_env("MON_CLIENT_STOMP_PASSWORD", "")
+    resolved_destination = destination or get_env("MON_CLIENT_STOMP_DESTINATION", "/topic/>")
     resolved_reconnect_delay = (
-        reconnect_delay if reconnect_delay is not None else get_int_env("STOMP_RECONNECT_DELAY", 5)
+        reconnect_delay
+        if reconnect_delay is not None
+        else get_int_env("MON_CLIENT_STOMP_RECONNECT_DELAY", 5)
     )
     resolved_max_reconnect_delay = (
         max_reconnect_delay
         if max_reconnect_delay is not None
-        else get_int_env("STOMP_MAX_RECONNECT_DELAY", max(resolved_reconnect_delay, 60))
+        else get_int_env("MON_CLIENT_STOMP_MAX_RECONNECT_DELAY", max(resolved_reconnect_delay, 60))
     )
     current_reconnect_delay = max(0, resolved_reconnect_delay)
     resolved_max_reconnect_delay = max(current_reconnect_delay, resolved_max_reconnect_delay)

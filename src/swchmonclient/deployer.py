@@ -100,7 +100,7 @@ class K8sDeployer:
     def _discover_kubeconfig_paths() -> list[str]:
         candidates: list[str] = []
 
-        env_kubeconfig = os.getenv("KUBECONFIG")
+        env_kubeconfig = os.getenv("MON_CLIENT_KUBECONFIG")
         if env_kubeconfig:
             candidates.extend(path for path in env_kubeconfig.split(os.pathsep) if path)
 
