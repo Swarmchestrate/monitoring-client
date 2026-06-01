@@ -1,6 +1,5 @@
 import json
 import logging
-import socket
 import threading
 import time
 from ipaddress import ip_address
@@ -8,7 +7,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Deque
 
-from .deployer import get_vm_private_ips
+from .deployer import get_current_vm_private_ip, get_vm_private_ips
 from .exceptions import MetricSubscriptionError, ThreadManagementError
 from .listener import CallbackStompListener
 from .thread_manager import MonitoringThreadManager
@@ -587,7 +586,12 @@ class MetricSubscriptionManager:
                         f"Failed to resolve raw metric nodes for 'all': {error}"
                     ) from error
             if selector == "local":
-                return [cls._get_local_private_ip()]
+                try:
+                    return cls._normalize_nodes([get_current_vm_private_ip()])
+                except Exception as error:
+                    raise MetricSubscriptionError(
+                        f"Failed to resolve raw metric nodes for 'local': {error}"
+                    ) from error
             return cls._normalize_nodes([node])
 
         return cls._normalize_nodes(node)
@@ -628,22 +632,6 @@ class MetricSubscriptionManager:
     @staticmethod
     def _build_raw_thread_name(node: str) -> str:
         return f"{RAW_LISTENER_THREAD_NAME_PREFIX}:{node}"
-
-    @staticmethod
-    def _get_local_private_ip() -> str:
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-                sock.connect(("8.8.8.8", 80))
-                local_ip = sock.getsockname()[0]
-        except OSError as error:
-            raise MetricSubscriptionError(
-                f"Failed to determine local private IP: {error}"
-            ) from error
-
-        if not isinstance(local_ip, str) or not local_ip or local_ip.startswith("127."):
-            raise MetricSubscriptionError("Failed to determine local private IP")
-
-        return local_ip
 
     @staticmethod
     def _should_store_raw_sample(target_node: str, parsed_node: str | None) -> bool:
