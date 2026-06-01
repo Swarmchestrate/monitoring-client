@@ -1,6 +1,6 @@
 [project]
 name = "swchmonclient"
-version = "0.1.3"
+version = "0.1.4"
 description = "Kubernetes manifest deploy, readiness monitoring, threaded exporter integration, and cleanup tooling."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -14,11 +14,11 @@ classifiers = [
   "Operating System :: OS Independent"
 ]
 dependencies = [
-  "kubernetes>=26.0.0",
-  "pyyaml>=6.0",
-  "jinja2>=3.0",
-  "stomp.py>=8.2.0",
-  "python-dotenv>=1.2.2",
+  "kubernetes==35.0.0",
+  "pyyaml==6.0.3",
+  "jinja2==3.1.6",
+  "stomp.py==9.0.0",
+  "python-dotenv==1.2.2",
 ]
 
 [build-system]

@@ -1,7 +1,11 @@
 import logging
 import signal
 import time
-from swchmonclient import query_metric_values_raw, subscribe_metric_raw, unsubscribe_metric
+from swchmonclient import (
+    query_metric_values_raw,
+    subscribe_metric_raw,
+    unsubscribe_metric,
+)
 
 METRIC_NAME = "cpu_util_instance"
 METRIC_NAME2 = "mean_cpu_util_prct"
@@ -53,10 +57,6 @@ def main() -> int:
         logging.info("Unsubscribing from raw metric %s", METRIC_NAME)
         unsubscribe_metric(METRIC_NAME)
         logging.info("Raw metric subscription stopped")
-
-
-    unsubscribe_metric(METRIC_NAME)
-
     return 0
 
 

@@ -1,20 +1,25 @@
 # swchmonclient
 
-A Python library for deploying the monitoring stack and consuming metric events over STOMP in the Swarmchestrate project.
+A Python library for deploying the monitoring stack and consuming SLO, constraints and raw metric events over STOMP in the Swarmchestrate project.
 
 ## Install
 
 ```bash
 pip install swchmonclient
+```
+
+OR
+
+```bash
 uv add swchmonclient
 ```
 
 ## Overview
 
-- Metrics defined in the SAT are monitored by EMS.
-- Composite metrics and SLOs are consumed from the central EPM.
-- Raw metrics can be consumed from the local EPA, an explicit list of nodes, or all nodes discovered from Kubernetes.
-- The library buffers metric values until `query_metric_values(...)` or `query_metric_values_raw(...)` is called.
+- `deploy_monitoring(...)` and `undeploy_monitoring(...)` manage the monitoring manifests from inside Kubernetes.
+- `subscribe_metric(...)` consumes standard metrics through a shared STOMP listener from EPM.
+- `subscribe_metric_raw(...)` consumes raw metrics directly from resolved node IPs EPA.
+- Metric values are buffered until `query_metric_values(...)` or `query_metric_values_raw(...)` is called.
 - Returned samples are consumed from the in-memory buffers.
 
 
@@ -31,16 +36,20 @@ from swchmonclient import (
     unsubscribe_metric,
 )
 
-deploy_monitoring("tosca_metrics_ze.yaml", "http://optimusdb.example/swarmkb")
-subscribe_metric("/topic/mysample_metric")
-recent_values = query_metric_values("/topic/mysample_metric")
-subscribe_metric_raw("/topic/myraw_metric", ["10.0.0.1", "10.0.0.2"])
-subscribe_metric_raw("/topic/myraw_metric", "all")
-subscribe_metric_raw("/topic/myraw_metric", "local")
-raw_values = query_metric_values_raw("/topic/myraw_metric", seconds=60)
-unsubscribe_metric("/topic/mysample_metric")
-unsubscribe_metric("/topic/myraw_metric")
-undeploy_monitoring(
+deploy_exit_code = deploy_monitoring(
+    "tosca_metrics_ze.yaml",
+    "http://optimusdb.example/swarmkb",
+)
+
+thread_name = subscribe_metric("cpu_util_instance")
+recent_values = query_metric_values("cpu_util_instance")
+
+raw_threads = subscribe_metric_raw("cpu_util_instance", ["10.0.0.1", "10.0.0.2"])
+raw_values = query_metric_values_raw("cpu_util_instance", seconds=60)
+
+unsubscribe_metric("cpu_util_instance")
+
+undeploy_exit_code = undeploy_monitoring(
     "tosca_metrics_ze.yaml",
     "http://optimusdb.example/swarmkb",
     namespace="default",
@@ -55,32 +64,60 @@ undeploy_monitoring(
 - `"all"` resolves all Kubernetes VM private IPs internally
 - `"local"` resolves the current Kubernetes node InternalIP and starts one raw listener for it
 
+> **Important:** An explicit node/IP list is the simplest option when running outside Kubernetes-aware environments because it does not require Kubernetes API access.
+>
 > **Important:** `node="all"` requires in-cluster Kubernetes config and RBAC permission to read Kubernetes nodes.
 >
 > **Important:** `node="local"` also uses the Kubernetes API in-cluster. It resolves the current pod, then the node backing that pod, so it needs RBAC permission to read the current pod and its node.
 
-If you do **not** want to grant cluster-wide node-read access, do not use `node="all"`; pass explicit node IPs instead.
+## Kubernetes access for `all` and `local`
 
-When testing `node="all"` from a temporary pod, start the pod with a service account so `load_incluster_config()` can use the mounted token. Some `kubectl` versions do **not** support `kubectl run --serviceaccount`, so use `--overrides` instead:
+These selectors use the in-cluster Kubernetes API:
+
+- explicit node/IP list: no Kubernetes API permission needed
+- `"all"`: cluster-wide `get` and `list` on `nodes`
+- `"local"`: `get` on `pods` in the service account namespace, plus cluster-wide `get` and `list` on `nodes`
+
+Apply the bundled manifest:
 
 ```bash
-kubectl create serviceaccount mon-client
-
-kubectl run python-shell \
-  --rm -i --tty \
-  --image=python:3.12-slim \
-  --restart=Never \
-  --overrides='
-{
-  "apiVersion": "v1",
-  "spec": {
-    "serviceAccountName": "mon-client"
-  }
-}' \
-  -- bash
+kubectl apply -f ./manifests/mon-client-rbac.yaml
 ```
 
-If your cluster or client version behaves badly with `--overrides`, use a Pod manifest instead:
+That manifest creates:
+
+- `ServiceAccount` `mon-client`
+- namespace `Role` + `RoleBinding` for `get pods`
+- `ClusterRole` + `ClusterRoleBinding` for `get,list nodes`
+
+If you deploy outside `default`, update the namespace fields in the manifest before applying it.
+
+The same permissions can be created with imperative `kubectl` commands:
+
+```bash
+kubectl create serviceaccount mon-client -n default
+kubectl create role mon-client-pod-reader --verb=get --resource=pods -n default
+kubectl create rolebinding mon-client-pod-reader \
+  --role=mon-client-pod-reader \
+  --serviceaccount=default:mon-client \
+  -n default
+kubectl create clusterrole mon-client-node-reader --verb=get,list --resource=nodes
+kubectl create clusterrolebinding mon-client-node-reader \
+  --clusterrole=mon-client-node-reader \
+  --serviceaccount=default:mon-client
+```
+
+Verify access with:
+
+```bash
+kubectl auth can-i get pods --as=system:serviceaccount:default:mon-client -n default
+kubectl auth can-i get nodes --as=system:serviceaccount:default:mon-client
+kubectl auth can-i list nodes --as=system:serviceaccount:default:mon-client
+```
+
+If you see an error like `Failed to list Kubernetes nodes: Forbidden` or `Failed to determine current Kubernetes node IP: Forbidden`, the service account can authenticate but does not have enough RBAC to read the required Kubernetes resources.
+
+## Testing in a pod
 
 ```bash
 cat <<'EOF' | kubectl apply -f -
@@ -101,55 +138,6 @@ EOF
 
 kubectl exec -it python-shell -- bash
 kubectl delete pod python-shell
-```
-
-If the raw `"all"` or `"local"` selector needs to resolve node IPs through the Kubernetes API, grant the service account permission to read the required resources. The simplest way is with imperative `kubectl` commands:
-
-```bash
-kubectl create serviceaccount mon-client
-kubectl create clusterrole mon-client-node-reader --verb=get,list --resource=pods,nodes
-kubectl create clusterrolebinding mon-client-node-reader \
-  --clusterrole=mon-client-node-reader \
-  --serviceaccount=default:mon-client
-```
-
-If you prefer YAML, use:
-
-```yaml
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: mon-client-node-reader
-rules:
-  - apiGroups: [""]
-    resources: ["pods"]
-    verbs: ["get"]
-  - apiGroups: [""]
-    resources: ["nodes"]
-    verbs: ["get", "list"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: mon-client-node-reader
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: mon-client-node-reader
-subjects:
-  - kind: ServiceAccount
-    name: mon-client
-    namespace: default
-```
-
-If you see an error like `Failed to list Kubernetes nodes: Forbidden` or `Failed to determine current Kubernetes node IP: Forbidden`, the service account can authenticate but does not have enough RBAC to read the required Kubernetes resources.
-
-You can verify the permission with:
-
-```bash
-kubectl auth can-i list nodes --as=system:serviceaccount:default:mon-client
-kubectl auth can-i get nodes --as=system:serviceaccount:default:mon-client
-kubectl auth can-i get pods --as=system:serviceaccount:default:mon-client
 ```
 
 Inside the pod, verify that the service account token and Kubernetes service env vars are present:
@@ -185,7 +173,7 @@ If you subscribe multiple raw metrics for the same node/IP, the library reuses t
 
 Deploys the standard monitoring stack manifests.
 
-If `./manifests/emsconfig.yaml` or `./manifests/ems+netdata-k3s_parametric.yaml` is missing locally, the library downloads it from the `v0.1.0` release assets before deployment. When a local copy already exists, it validates the content against the release asset, logs whether it matches, and replaces the file if it differs.
+This helper uses in-cluster Kubernetes config. If `./manifests/emsconfig.yaml` or `./manifests/ems+netdata-k3s_parametric.yaml` is missing locally, the library downloads it from the `v0.1.0` release assets before deployment. When a local copy already exists, it validates the content against the release asset, logs whether it matches, and replaces the file if it differs.
 
 | Parameter | Required | Type | Description |
 | --- | --- | --- | --- |
@@ -199,7 +187,7 @@ If `./manifests/emsconfig.yaml` or `./manifests/ems+netdata-k3s_parametric.yaml`
 
 Undeploys the standard monitoring stack manifests and the related cleanup resources.
 
-Like deployment, undeploy ensures the two required monitoring manifests are available locally, logs whether existing local copies match the published release assets, and refreshes differing files from the release.
+Like deployment, undeploy uses in-cluster Kubernetes config, ensures the two required monitoring manifests are available locally, logs whether existing local copies match the published release assets, and refreshes differing files from the release.
 
 | Parameter | Required | Type | Description |
 | --- | --- | --- | --- |
@@ -236,7 +224,8 @@ Starts raw metric listeners that connect directly to node IPs.
 - Starts one raw listener thread per resolved node/IP and reuses it for additional raw metrics on that same node/IP.
 - Raw subscriptions connect directly to each resolved node/IP instead of `MON_CLIENT_STOMP_HOST`.
 - Mixing `subscribe_metric(...)` and `subscribe_metric_raw(...)` for the same metric is rejected.
-- **Important:** `node="all"` requires in-cluster Kubernetes config loaded via `load_incluster_config()`.
+- **Important:** `node="all"` and `node="local"` use in-cluster Kubernetes API access.
+- **Important:** `node="local"` needs `get pods` in the current namespace and `get,list nodes` cluster-wide.
 
 ### `query_metric_values(metric: str) -> list[Any]`
 
@@ -245,6 +234,9 @@ Returns all currently buffered metric values for the metric and consumes those r
 | Parameter | Required | Type | Description |
 | --- | --- | --- | --- |
 | `metric` | Yes | `str` | Metric name or full topic destination. |
+
+**Output:**
+
 ```python
 [42.0, 41.7]
 ```
