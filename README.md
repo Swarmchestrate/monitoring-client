@@ -31,7 +31,7 @@ from swchmonclient import (
     unsubscribe_metric,
 )
 
-deploy_monitoring("./k3s.yaml", "tosca_metrics_ze.yaml", "http://optimusdb.example/swarmkb")
+deploy_monitoring("tosca_metrics_ze.yaml", "http://optimusdb.example/swarmkb")
 subscribe_metric("/topic/mysample_metric")
 recent_values = query_metric_values("/topic/mysample_metric")
 subscribe_metric_raw("/topic/myraw_metric", ["10.0.0.1", "10.0.0.2"])
@@ -41,7 +41,6 @@ raw_values = query_metric_values_raw("/topic/myraw_metric", seconds=60)
 unsubscribe_metric("/topic/mysample_metric")
 unsubscribe_metric("/topic/myraw_metric")
 undeploy_monitoring(
-    "./k3s.yaml",
     "tosca_metrics_ze.yaml",
     "http://optimusdb.example/swarmkb",
     namespace="default",
@@ -54,7 +53,111 @@ undeploy_monitoring(
 
 - `["10.0.0.1", "10.0.0.2"]` starts one raw listener per explicit node/IP
 - `"all"` resolves all Kubernetes VM private IPs internally
-- `"local"` resolves the current machine's private IP and starts one raw listener for it
+- `"local"` resolves the current Kubernetes node InternalIP and starts one raw listener for it
+
+> **Important:** `node="all"` requires in-cluster Kubernetes config and RBAC permission to read Kubernetes nodes.
+>
+> **Important:** `node="local"` also uses the Kubernetes API in-cluster. It resolves the current pod, then the node backing that pod, so it needs RBAC permission to read the current pod and its node.
+
+If you do **not** want to grant cluster-wide node-read access, do not use `node="all"`; pass explicit node IPs instead.
+
+When testing `node="all"` from a temporary pod, start the pod with a service account so `load_incluster_config()` can use the mounted token. Some `kubectl` versions do **not** support `kubectl run --serviceaccount`, so use `--overrides` instead:
+
+```bash
+kubectl create serviceaccount mon-client
+
+kubectl run python-shell \
+  --rm -i --tty \
+  --image=python:3.12-slim \
+  --restart=Never \
+  --overrides='
+{
+  "apiVersion": "v1",
+  "spec": {
+    "serviceAccountName": "mon-client"
+  }
+}' \
+  -- bash
+```
+
+If your cluster or client version behaves badly with `--overrides`, use a Pod manifest instead:
+
+```bash
+cat <<'EOF' | kubectl apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: python-shell
+spec:
+  serviceAccountName: mon-client
+  restartPolicy: Never
+  containers:
+  - name: python-shell
+    image: python:3.12-slim
+    command: ["bash", "-lc", "sleep infinity"]
+    stdin: true
+    tty: true
+EOF
+
+kubectl exec -it python-shell -- bash
+kubectl delete pod python-shell
+```
+
+If the raw `"all"` or `"local"` selector needs to resolve node IPs through the Kubernetes API, grant the service account permission to read the required resources. The simplest way is with imperative `kubectl` commands:
+
+```bash
+kubectl create serviceaccount mon-client
+kubectl create clusterrole mon-client-node-reader --verb=get,list --resource=pods,nodes
+kubectl create clusterrolebinding mon-client-node-reader \
+  --clusterrole=mon-client-node-reader \
+  --serviceaccount=default:mon-client
+```
+
+If you prefer YAML, use:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: mon-client-node-reader
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: mon-client-node-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: mon-client-node-reader
+subjects:
+  - kind: ServiceAccount
+    name: mon-client
+    namespace: default
+```
+
+If you see an error like `Failed to list Kubernetes nodes: Forbidden` or `Failed to determine current Kubernetes node IP: Forbidden`, the service account can authenticate but does not have enough RBAC to read the required Kubernetes resources.
+
+You can verify the permission with:
+
+```bash
+kubectl auth can-i list nodes --as=system:serviceaccount:default:mon-client
+kubectl auth can-i get nodes --as=system:serviceaccount:default:mon-client
+kubectl auth can-i get pods --as=system:serviceaccount:default:mon-client
+```
+
+Inside the pod, verify that the service account token and Kubernetes service env vars are present:
+
+```bash
+ls /var/run/secrets/kubernetes.io/serviceaccount
+env | grep KUBERNETES_SERVICE
+```
 
 Raw subscriptions connect directly to the resolved node IPs. Read buffered raw samples with:
 
@@ -78,7 +181,7 @@ If you subscribe multiple raw metrics for the same node/IP, the library reuses t
 
 ## API Reference
 
-### `deploy_monitoring(kubeconfig_path: str | None, sat_file: str, optimusdb_url: str, logger: logging.Logger | None = None) -> int`
+### `deploy_monitoring(sat_file: str, optimusdb_url: str, logger: logging.Logger | None = None) -> int`
 
 Deploys the standard monitoring stack manifests.
 
@@ -86,14 +189,13 @@ If `./manifests/emsconfig.yaml` or `./manifests/ems+netdata-k3s_parametric.yaml`
 
 | Parameter | Required | Type | Description |
 | --- | --- | --- | --- |
-| `kubeconfig_path` | No | `str \| None` | Path to the kubeconfig file. If omitted, the default kubeconfig / in-cluster fallback is used. |
 | `sat_file` | Yes | `str` | SAT file path injected into the templated manifest. |
 | `optimusdb_url` | Yes | `str` | OptimusDB URL injected into the templated manifest. |
 | `logger` | No | `logging.Logger \| None` | Custom logger. If omitted, stdout logging is configured automatically. |
 
 **Output:** process-style exit code: `0` on success, `1` if one or more deploy steps fail.
 
-### `undeploy_monitoring(kubeconfig_path: str | None, sat_file: str, optimusdb_url: str, namespace: str | None = None, logger: logging.Logger | None = None) -> int`
+### `undeploy_monitoring(sat_file: str, optimusdb_url: str, namespace: str | None = None, logger: logging.Logger | None = None) -> int`
 
 Undeploys the standard monitoring stack manifests and the related cleanup resources.
 
@@ -101,7 +203,6 @@ Like deployment, undeploy ensures the two required monitoring manifests are avai
 
 | Parameter | Required | Type | Description |
 | --- | --- | --- | --- |
-| `kubeconfig_path` | No | `str \| None` | Path to the kubeconfig file. If omitted, the default kubeconfig / in-cluster fallback is used. |
 | `sat_file` | Yes | `str` | SAT file path used to render the templated manifest before undeploy. |
 | `optimusdb_url` | Yes | `str` | OptimusDB URL used to render the templated manifest before undeploy. |
 | `namespace` | No | `str \| None` | Namespace override for deleting namespaced resources. If omitted, manifest/default namespaces are used. |
@@ -126,7 +227,7 @@ Starts raw metric listeners that connect directly to node IPs.
 | Parameter | Required | Type | Description |
 | --- | --- | --- | --- |
 | `metric` | Yes | `str` | Metric name or full topic destination. Plain names are normalized to `/topic/<metric>`. |
-| `node` | Yes | `list[str] \| str` | Raw node selector. Use an explicit node/IP list, `"all"` for all Kubernetes VM private IPs, or `"local"` for the current machine's private IP. |
+| `node` | Yes | `list[str] \| str` | Raw node selector. Use an explicit node/IP list, `"all"` for all Kubernetes VM private IPs, or `"local"` for the current Kubernetes node InternalIP. |
 | `cache_size` | No | `int \| None` | Per raw metric per node sample buffer size. If omitted, the default value `1000` is used. |
 
 **Output:** `dict[str, str]` mapping each resolved node/IP to the listener thread name started for it.
@@ -135,7 +236,7 @@ Starts raw metric listeners that connect directly to node IPs.
 - Starts one raw listener thread per resolved node/IP and reuses it for additional raw metrics on that same node/IP.
 - Raw subscriptions connect directly to each resolved node/IP instead of `MON_CLIENT_STOMP_HOST`.
 - Mixing `subscribe_metric(...)` and `subscribe_metric_raw(...)` for the same metric is rejected.
-- For `node="all"`, Kubernetes config is resolved automatically from the default kubeconfig, `MON_CLIENT_KUBECONFIG`, common local files such as `./k3s.yaml`, or in-cluster config.
+- **Important:** `node="all"` requires in-cluster Kubernetes config loaded via `load_incluster_config()`.
 
 ### `query_metric_values(metric: str) -> list[Any]`
 
@@ -188,10 +289,10 @@ Stops metric listeners or removes node-specific subscriptions, depending on the 
 
 Runnable examples are available under `examples/`:
 
-- `examples/deploy_example.py`
-- `examples/undeploy_example.py`
-- `examples/subscribe_cpu_util_instance_example.py`
-- `examples/subscribe_cpu_util_instance_raw_example.py`
+- `examples/deploy.py`
+- `examples/undeploy.py`
+- `examples/subscribe_cpu_util_instance.py`
+- `examples/subscribe_cpu_util_instance_raw.py`
 
 ## Simple Snippets
 
@@ -200,7 +301,7 @@ Runnable examples are available under `examples/`:
 ```python
 from swchmonclient import deploy_monitoring
 
-exit_code = deploy_monitoring("./k3s.yaml", "tosca_metrics_ze.yaml", "http://optimusdb.example/swarmkb")
+exit_code = deploy_monitoring("tosca_metrics_ze.yaml", "http://optimusdb.example/swarmkb")
 ```
 
 ### `undeploy_monitoring`
@@ -209,7 +310,6 @@ exit_code = deploy_monitoring("./k3s.yaml", "tosca_metrics_ze.yaml", "http://opt
 from swchmonclient import undeploy_monitoring
 
 exit_code = undeploy_monitoring(
-    "./k3s.yaml",
     "tosca_metrics_ze.yaml",
     "http://optimusdb.example/swarmkb",
     namespace="default",
@@ -232,7 +332,7 @@ from swchmonclient import subscribe_metric_raw
 
 threads = subscribe_metric_raw("cpu_util_instance", "local")
 # or: subscribe_metric_raw("cpu_util_instance", "local", cache_size=500)
-# or: subscribe_metric_raw("cpu_util_instance", "all")
+# or: subscribe_metric_raw("cpu_util_instance", "all")  # IMPORTANT: requires Kubernetes config
 # or: subscribe_metric_raw("cpu_util_instance", ["10.0.0.1", "10.0.0.2"])
 print(threads)
 ```
