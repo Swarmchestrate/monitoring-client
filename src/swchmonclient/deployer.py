@@ -31,6 +31,7 @@ MONITORING_EXTRA_RESOURCES_TO_DELETE = (
 )
 DEFAULT_MONITORING_NAMESPACE = "default"
 MANIFEST_DOWNLOAD_TIMEOUT_SECONDS = 30
+SERVICEACCOUNT_NAMESPACE_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
 MONITORING_MANIFEST_RELEASE_URLS = {
     MONITORING_TEMPLATE_MANIFEST: (
         "https://github.com/Swarmchestrate/monitoring-client/releases/download/v0.1.0/emsconfig.yaml"
@@ -44,85 +45,17 @@ MONITORING_MANIFEST_RELEASE_URLS = {
 class K8sDeployer:
     """Deploy and remove Kubernetes resources from manifest files."""
 
-    def __init__(
-        self,
-        kubeconfig_path: str | None = None,
-        context: str | None = None,
-        in_cluster_fallback: bool = True,
-    ) -> None:
-        self._load_config(kubeconfig_path=kubeconfig_path, context=context, in_cluster_fallback=in_cluster_fallback)
+    def __init__(self) -> None:
+        self._load_config()
         self.api_client = ApiClient()
         self.core_v1_api = CoreV1Api(self.api_client)
         self.dynamic_client = dynamic.DynamicClient(self.api_client)
 
-    def _load_config(
-        self,
-        kubeconfig_path: str | None,
-        context: str | None,
-        in_cluster_fallback: bool,
-    ) -> None:
-        if kubeconfig_path is not None:
-            try:
-                config.load_kube_config(config_file=kubeconfig_path, context=context)
-                return
-            except Exception as kubeconfig_error:
-                if not in_cluster_fallback:
-                    raise DeploymentError(f"Unable to load kubeconfig: {kubeconfig_error}") from kubeconfig_error
-                try:
-                    config.load_incluster_config()
-                    return
-                except Exception as incluster_error:
-                    raise DeploymentError(
-                        "Unable to load Kubernetes configuration from kubeconfig or in-cluster environment"
-                    ) from incluster_error
-
+    def _load_config(self) -> None:
         try:
-            config.load_kube_config(config_file=kubeconfig_path, context=context)
-            return
-        except Exception as kubeconfig_error:
-            for discovered_path in self._discover_kubeconfig_paths():
-                try:
-                    config.load_kube_config(config_file=discovered_path, context=context)
-                    return
-                except Exception:
-                    continue
-            if not in_cluster_fallback:
-                raise DeploymentError(f"Unable to load kubeconfig: {kubeconfig_error}") from kubeconfig_error
-            try:
-                config.load_incluster_config()
-                return
-            except Exception as incluster_error:
-                raise DeploymentError(
-                    "Unable to load Kubernetes configuration from kubeconfig or in-cluster environment"
-                ) from incluster_error
-
-    @staticmethod
-    def _discover_kubeconfig_paths() -> list[str]:
-        candidates: list[str] = []
-
-        env_kubeconfig = os.getenv("MON_CLIENT_KUBECONFIG")
-        if env_kubeconfig:
-            candidates.extend(path for path in env_kubeconfig.split(os.pathsep) if path)
-
-        candidates.extend(
-            [
-                "./k3s.yaml",
-                "./kubeconfig",
-                str(Path.home() / "k3s.yaml"),
-                str(Path.home() / ".kube" / "config"),
-            ]
-        )
-
-        discovered: list[str] = []
-        seen_paths: set[str] = set()
-        for candidate in candidates:
-            resolved_candidate = os.path.abspath(os.path.expanduser(candidate))
-            if resolved_candidate in seen_paths or not os.path.isfile(resolved_candidate):
-                continue
-            seen_paths.add(resolved_candidate)
-            discovered.append(resolved_candidate)
-
-        return discovered
+            config.load_incluster_config()
+        except Exception as error:
+            raise DeploymentError("Unable to load in-cluster Kubernetes configuration") from error
 
     def _iter_manifest_documents(self, manifest_path: str) -> Iterable[dict[str, Any]]:
         try:
@@ -313,18 +246,69 @@ class K8sDeployer:
         private_ips: list[str] = []
         seen_ips: set[str] = set()
         for node in nodes:
-            addresses = getattr(getattr(node, "status", None), "addresses", []) or []
-            for address in addresses:
-                if getattr(address, "type", None) != "InternalIP":
-                    continue
-                ip = getattr(address, "address", None)
-                if not isinstance(ip, str) or not ip or ip in seen_ips:
-                    continue
-                seen_ips.add(ip)
-                private_ips.append(ip)
-                break
+            ip = self._extract_node_internal_ip(node)
+            if ip is None or ip in seen_ips:
+                continue
+            seen_ips.add(ip)
+            private_ips.append(ip)
 
         return private_ips
+
+    def get_current_vm_private_ip(self) -> str:
+        """Return the current pod's Kubernetes node InternalIP."""
+        pod_name = os.getenv("HOSTNAME")
+        if not isinstance(pod_name, str) or not pod_name.strip():
+            raise DeploymentError("Failed to determine current pod name from HOSTNAME")
+
+        namespace = self._read_current_namespace()
+
+        try:
+            pod = self.core_v1_api.read_namespaced_pod(name=pod_name, namespace=namespace)
+            node_name = getattr(getattr(pod, "spec", None), "node_name", None)
+            if not isinstance(node_name, str) or not node_name.strip():
+                raise DeploymentError(f"Failed to determine Kubernetes node name for pod {pod_name}")
+
+            node = self.core_v1_api.read_node(name=node_name)
+        except ApiException as error:
+            raise DeploymentError(f"Failed to determine current Kubernetes node IP: {error.reason}") from error
+        except DeploymentError:
+            raise
+        except Exception as error:
+            raise DeploymentError(f"Failed to determine current Kubernetes node IP: {error}") from error
+
+        ip = self._extract_node_internal_ip(node)
+        if ip is None:
+            raise DeploymentError(f"Failed to determine InternalIP for Kubernetes node {node_name}")
+
+        return ip
+
+    @staticmethod
+    def _extract_node_internal_ip(node: object) -> str | None:
+        addresses = getattr(getattr(node, "status", None), "addresses", []) or []
+        for address in addresses:
+            if getattr(address, "type", None) != "InternalIP":
+                continue
+            ip = getattr(address, "address", None)
+            if isinstance(ip, str) and ip:
+                return ip
+        return None
+
+    @staticmethod
+    def _read_current_namespace() -> str:
+        try:
+            with open(SERVICEACCOUNT_NAMESPACE_PATH, "r", encoding="utf-8") as handle:
+                namespace = handle.read().strip()
+        except OSError as error:
+            raise DeploymentError(
+                f"Failed to determine current namespace from {SERVICEACCOUNT_NAMESPACE_PATH}: {error}"
+            ) from error
+
+        if not namespace:
+            raise DeploymentError(
+                f"Failed to determine current namespace from {SERVICEACCOUNT_NAMESPACE_PATH}"
+            )
+
+        return namespace
 
 
 def _resolve_manifests_with_optional_render(
@@ -405,8 +389,6 @@ def _ensure_monitoring_manifests(logger: Logger) -> None:
 
 def _deploy_manifests_with_optional_render(
     manifests: Sequence[str],
-    kubeconfig_path: str | None = None,
-    context: str | None = None,
     template_manifest_path: str | None = None,
     template_variables: dict[str, str] | None = None,
     logger: Logger | None = None,
@@ -420,7 +402,7 @@ def _deploy_manifests_with_optional_render(
     """
     from .logging_utils import configure_stdout_logger
     active_logger = logger or configure_stdout_logger(logger_name)
-    deployer = K8sDeployer(kubeconfig_path=kubeconfig_path, context=context)
+    deployer = K8sDeployer()
     overall_ok = True
     rendered_template_path: str | None = None
 
@@ -478,8 +460,6 @@ def _deploy_manifests_with_optional_render(
 
 def _undeploy_manifests_with_optional_render(
     manifests: Sequence[str],
-    kubeconfig_path: str | None = None,
-    context: str | None = None,
     namespace: str | None = None,
     template_manifest_path: str | None = None,
     template_variables: dict[str, str] | None = None,
@@ -490,7 +470,7 @@ def _undeploy_manifests_with_optional_render(
     from .logging_utils import configure_stdout_logger
 
     active_logger = logger or configure_stdout_logger(logger_name)
-    deployer = K8sDeployer(kubeconfig_path=kubeconfig_path, context=context)
+    deployer = K8sDeployer()
     overall_ok = True
     rendered_template_path: str | None = None
 
@@ -546,7 +526,6 @@ def _undeploy_manifests_with_optional_render(
 
 
 def deploy_monitoring(
-    kubeconfig_path: str | None,
     sat_file: str,
     optimusdb_url: str,
     logger: Logger | None = None,
@@ -563,7 +542,6 @@ def deploy_monitoring(
         return 1
     return _deploy_manifests_with_optional_render(
         manifests=MONITORING_DEPLOY_MANIFESTS,
-        kubeconfig_path=kubeconfig_path,
         template_manifest_path=MONITORING_TEMPLATE_MANIFEST,
         template_variables={
             "sat_file": sat_file,
@@ -575,7 +553,6 @@ def deploy_monitoring(
 
 
 def undeploy_monitoring(
-    kubeconfig_path: str | None,
     sat_file: str,
     optimusdb_url: str,
     namespace: str | None = None,
@@ -593,7 +570,6 @@ def undeploy_monitoring(
         return 1
     return _undeploy_manifests_with_optional_render(
         manifests=MONITORING_UNDEPLOY_MANIFESTS,
-        kubeconfig_path=kubeconfig_path,
         namespace=namespace,
         template_manifest_path=MONITORING_TEMPLATE_MANIFEST,
         template_variables={
@@ -606,10 +582,13 @@ def undeploy_monitoring(
     )
 
 
-def get_vm_private_ips(
-    kubeconfig_path: str | None = None,
-    context: str | None = None,
-) -> list[str]:
-    """Load Kubernetes config and return the cluster nodes' private IP addresses."""
-    deployer = K8sDeployer(kubeconfig_path=kubeconfig_path, context=context)
+def get_vm_private_ips() -> list[str]:
+    """Load in-cluster Kubernetes config and return the cluster nodes' private IP addresses."""
+    deployer = K8sDeployer()
     return deployer.get_vm_private_ips()
+
+
+def get_current_vm_private_ip() -> str:
+    """Load in-cluster Kubernetes config and return the current pod's node InternalIP."""
+    deployer = K8sDeployer()
+    return deployer.get_current_vm_private_ip()
