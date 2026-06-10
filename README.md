@@ -22,6 +22,8 @@ uv add swchmonclient
 - Metric values are buffered until `query_metric_values(...)` or `query_metric_values_raw(...)` is called.
 - Returned samples are consumed from the in-memory buffers.
 
+> **Important:** `deploy_monitoring(...)` and `undeploy_monitoring(...)` use in-cluster Kubernetes configuration. Run them from a pod that has a mounted service account token and RBAC permission to create, patch, get, list, and delete the Kubernetes resources referenced by the monitoring manifests.
+
 
 ## Quick Example
 
@@ -173,7 +175,7 @@ If you subscribe multiple raw metrics for the same node/IP, the library reuses t
 
 Deploys the standard monitoring stack manifests.
 
-This helper uses in-cluster Kubernetes config. If `./manifests/emsconfig.yaml` or `./manifests/ems+netdata-k3s_parametric.yaml` is missing locally, the library downloads it from the `v0.1.0` release assets before deployment. When a local copy already exists, it validates the content against the release asset, logs whether it matches, and replaces the file if it differs.
+This helper uses in-cluster Kubernetes config loaded from the pod's service account. It does not read a local kubeconfig. The service account used by the pod must have RBAC permission to create or patch the Kubernetes resources defined by the monitoring manifests. If `./manifests/emsconfig.yaml` or `./manifests/ems+netdata-k3s_parametric.yaml` is missing locally, the library downloads it from the `v0.1.0` release assets before deployment. When a local copy already exists, it validates the content against the release asset, logs whether it matches, and replaces the file if it differs.
 
 | Parameter | Required | Type | Description |
 | --- | --- | --- | --- |
@@ -187,7 +189,7 @@ This helper uses in-cluster Kubernetes config. If `./manifests/emsconfig.yaml` o
 
 Undeploys the standard monitoring stack manifests and the related cleanup resources.
 
-Like deployment, undeploy uses in-cluster Kubernetes config, ensures the two required monitoring manifests are available locally, logs whether existing local copies match the published release assets, and refreshes differing files from the release.
+Like deployment, undeploy uses in-cluster Kubernetes config loaded from the pod's service account and does not read a local kubeconfig. That service account must have RBAC permission to delete the Kubernetes resources defined by the manifests and the additional cleanup resources. Undeploy also ensures the two required monitoring manifests are available locally, logs whether existing local copies match the published release assets, and refreshes differing files from the release.
 
 | Parameter | Required | Type | Description |
 | --- | --- | --- | --- |
