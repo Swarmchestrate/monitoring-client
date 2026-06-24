@@ -75,7 +75,9 @@ metadata:
 data:
   config.yml: |
     disabled: no
+
     name: 'kubernetes'
+
     discover:
       - discoverer: k8s
         k8s:
@@ -503,6 +505,9 @@ spec:
               mountPath: "/etc/netdata/go.d/sd/k8s.conf"
               subPath: config.yml
           securityContext:
+            ###Custom addition - andreas
+            privileged: true
+            ###Custom addition end
             capabilities:
               add:
                 - SYS_PTRACE
@@ -658,10 +663,10 @@ data:
   get-tosca-model.sh: |
     #!/bin/bash
     set -euo pipefail
-    # OPTIMUSDB_URL="${OPTIMUSDB_URL:-http://193.225.250.240/optimusdb1/swarmkb}"
-    OPTIMUSDB_URL="${OPTIMUSDB_URL}"
-    SAT_FILE="${SAT_FILE}"
-    TOSCA_MODEL_PATH="${TOSCA_MODEL_PATH}"
+
+    OPTIMUSDB_URL="${OPTIMUSDB_URL:-http://193.225.250.240/optimusdb1/swarmkb}"
+    SAT_FILE="${SAT_FILE:-test-tosca-model.yaml}"
+    TOSCA_MODEL_PATH="${TOSCA_MODEL_PATH:-/shared/test-tosca-model.yaml}"
     RETRY_DELAY="${RETRY_DELAY:-5}"
     MAX_RETRIES="${MAX_RETRIES:-60}"
 
@@ -751,97 +756,7 @@ data:
     done
 
     echo "Done"
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: tosca-model-configmap
-data:
-  tosca-model.yaml: |
-    tosca_definitions_version: tosca_prestocloud_mapping_1_2
-    metadata:
-       template_name: ICCS generated types definition
-       template_author: ICCS
-    description: Types Description
 
-    imports:
-       - tosca-normative-types:1.2
-       - iccs-normative-types:1.0
-       - resource-descriptions:1.0
-       - placement-constraints:1.0
-
-    node_types:
-      a_component:
-        nodes.AdvancedMonitoringCollector:
-          derived_from: tosca.nodes.Root
-          description: An example illustrating metric collection possibilities
-          capabilities:
-            - monitoring:
-                type: capabilities.MetricMonitoringCapability
-                properties:
-                  raw:
-                    - cpu_util_instance:
-                        collector: netdata
-    #                    collector_inst: netdata__system__cpu__user
-                        config:
-                          scope_contexts: system.cpu
-                          results-aggregation: SUM
-                        collection_frequency: 15 s
-                        collection_output: all  #first/last
-                        unit:
-                          id: 'prct'
-                          type: real
-                          range: [0, 100]
-                    - response_time:
-                        collector: prometheus
-                        collector_inst: request_processing_seconds_sum
-                        config:
-                          metric: 'request_processing_seconds_sum'
-                          port: 9000
-                          endpoint: /
-                          delay: 0
-                          components: 'app'
-                          namespace: 'default'
-                        collection_frequency: 30 s
-                        collection_output: all
-                        unit:
-                          id: 's'
-                          type: real
-
-                  composite:
-                    - mean_cpu_util_prct:
-                        formula: 
-                          type: 'mean'
-                          argument: 'cpu_util_instance'
-                          collection_frequency: 30 s
-                          collection_output: all  #first/last
-                        window: 
-                          type: 'sliding'  
-                          size: '5 min'
-    #                    processing:
-    #                      type: 'grouping'  #fasdsd
-    #                      criteria: 'PER_ZONE' #PER_HOST/PER_ZONE/PER_REGION/CROSS-SWARMS
-                          
-                    - mean_response_time:
-                        formula:
-                          type: 'mean'
-                          argument: 'response_time'
-                          collection_frequency: 30 s
-                          collection_output: all  #first/last
-                        window:
-                          type: 'sliding'
-                          size: '5 min'
-    #                    processing:
-    #                      type: 'grouping'  #fasdsd
-    #                      criteria: 'PER_ZONE' #PER_HOST/PER_ZONE/PER_REGION/CROSS-SWARMS
-    
-            - slo:
-                type: capabilities.SloMonitoringCapability 
-                properties: 
-                  - cpu_slo: 
-                      constraint: 'mean_cpu_util_prct > 80'
-                  - response_time_slo:
-                      constraint: 'mean_response_time > 500'
 ---
 # Source: ems-server/templates/deployment.yaml
 apiVersion: apps/v1
@@ -870,7 +785,7 @@ spec:
       serviceAccountName: ems-server-service-account
       securityContext:
         {}
-      
+
       volumes:
         - name: shared-data
           emptyDir: {}
@@ -881,22 +796,22 @@ spec:
         - name: tosca-model-data
           configMap:
             name: tosca-model-configmap
-      
+
       initContainers:
         - name: init-tosca-model-writer
           image: alpine:latest
           # pass through any chosen model filename/path via environment variables
           env:
-            - name: OPTIMUSDB_URL
-              valueFrom:
-                configMapKeyRef:
-                  name: emsconfig
-                  key: OPTIMUSDB_URL
             - name: SAT_FILE
               valueFrom:
                 configMapKeyRef:
                   name: emsconfig
                   key: SAT_FILE
+            - name: USE_KB
+              valueFrom:
+                configMapKeyRef:
+                  name: emsconfig
+                  key: USE_KB
             - name: TOSCA_MODEL_PATH
               value: /shared/$(SAT_FILE)
 #              valueFrom:
@@ -904,8 +819,12 @@ spec:
 #                  name: emsconfig
 #                  key: TOSCA_MODEL_PATH
 #          command: ["sh", "-c", "/scripts/get-tosca-model.sh | tee /shared/get-tosca-model.log"]
-          command: ["sh", "-c", "apk update && apk add curl jq && mkdir -p /run/script && cp /scripts/get-tosca-model.sh /run/script/ && chmod +x /run/script/get-tosca-model.sh && ls -alh /run/script/ && sh -x /run/script/get-tosca-model.sh | tee /shared/get-tosca-model.log"]
+          command: ["sh", "-c", "if [ $(USE_KB) == 'true' ]; then echo 'USE KB is $(USE_KB)' && apk update && apk add curl jq && mkdir -p /run/script && cp /scripts/get-tosca-model.sh /run/script/ && chmod +x /run/script/get-tosca-model.sh && ls -alh /run/script/ && sh -x /run/script/get-tosca-model.sh | tee /shared/get-tosca-model.log; else echo '$(USE_KB) was not equal to the literal value 'true', defaulting to use the local model with the name of SAT_FILE ( $(SAT_FILE) )' && cp /original-model/test-tosca-model.yaml /shared/$(SAT_FILE); fi"]
           volumeMounts:
+            - name: tosca-model-data
+              mountPath: /original-model/test-tosca-model.yaml
+              subPath: test-tosca-model.yaml
+              readOnly: true
             - name: shared-data
               mountPath: /shared
             - name: script-volume
@@ -914,21 +833,22 @@ spec:
               #subPath: get-tosca-model.sh
               # Mount read-only
               readOnly: true
-      
+
       terminationGracePeriodSeconds: 10
       containers:
         - name: ems-server
           securityContext:
             {}
-          image: "docker.io/ipatini/emsserver:latest"
+#          image: "docker.io/ipatini/emsserver:latest"
+          image: "ghcr.io/imu-iccs/ems-server-swarmchestrate:1.0.0-snapshot"
           #imagePullPolicy: IfNotPresent
           imagePullPolicy: Always
           volumeMounts:
             - name: shared-data
               mountPath: /opt/ems-server/models
 #            - name: tosca-model-data
-#              mountPath: /opt/ems-server/models/tosca-model.yaml
-#              subPath: tosca-model.yaml
+#              mountPath: /opt/ems-server/models/test-tosca-model.yaml
+#              subPath: test-tosca-model.yaml
 #              readOnly: true
             - name: script-volume
               mountPath: /scripts/get-tosca-model.sh
@@ -938,16 +858,16 @@ spec:
 
           env:
             # allow choosing the tosca model via environment variable
-            - name: OPTIMUSDB_URL
-              valueFrom:
-                configMapKeyRef:
-                  name: emsconfig
-                  key: OPTIMUSDB_URL
             - name: SAT_FILE
               valueFrom:
                 configMapKeyRef:
                   name: emsconfig
                   key: SAT_FILE
+            - name: USE_KB
+              valueFrom:
+                configMapKeyRef:
+                  name: emsconfig
+                  key: USE_KB
             - name: TOSCA_MODEL_PATH
               value: /shared/$(SAT_FILE)
 #              valueFrom:
@@ -970,6 +890,34 @@ spec:
             #
             # EMS server configuration -- Environment variables from values.yaml
             #
+            - name: SPRING_CLOUD_VAULT_ENABLED
+              value: "false"
+            - name: SPRING_CLOUD_VAULT_KV_ENABLED
+              value: "false"
+            - name: CONTROL_SSL_KEYSTORE_PASSWORD
+              value: "ENC(ISMbn01HVPbtRPkqm2Lslg==)"
+            - name: CONTROL_SSL_TRUSTSTORE_PASSWORD
+              value: "ENC(ISMbn01HVPbtRPkqm2Lslg==)"
+            - name: CONTROL_SSL_KEY_ENTRY_GENERATE
+              value: "ALWAYS"
+            - name: BROKERCEP_ADDITIONAL_BROKER_CREDENTIALS
+              value: "aaa/111"
+#            - name: CONTROL_SSL_KEYSTORE_FILE
+#              value: "/opt/ems-server/certs/ems-keystore.p12"
+#            - name: CONTROL_SSL_TRUSTSTORE_FILE
+#              value: "/opt/ems-server/certs/common-truststore.p12"
+#            - name: CONTROL_SSL_CERTIFICATE_FILE
+#              value: "/opt/ems-server/certs/ems.crt"
+            - name: JWT_SECRET
+              value: "secret"
+            - name: WEB_SECURITY_JWT_AUTHENTICATION_REQUEST_PARAMETER
+              value: "jwt"
+            - name: WEB_SECURITY_JWT_AUTHENTICATION_PRINT_SAMPLE_TOKEN
+              value: "true"
+            - name: WEB_SECURITY_API_KEY_AUTHENTICATION_VALUE
+              value: "1234567890"
+            - name: WEB_SECURITY_FORM_AUTHENTICATION_PASSWORD
+              value: "ems"
             - name: JASYPT_PASSWORD
               value: "password"
             - name: NET_UTIL_ADDRESS_DISCOVERY_SERVICES
@@ -1020,7 +968,8 @@ spec:
             - name: EMS_CLIENT_DAEMONSET_NAME
               value: "ems-client-daemonset"
             - name: EMS_CLIENT_DAEMONSET_IMAGE_REPOSITORY
-              value: "docker.io/ipatini/emsclient"
+#              value: "docker.io/ipatini/emsclient"
+              value: "ghcr.io/imu-iccs/ems-client"
             - name: EMS_CLIENT_DAEMONSET_IMAGE_TAG
               value: "latest"
             - name: EMS_CLIENT_DAEMONSET_IMAGE_PULL_POLICY
