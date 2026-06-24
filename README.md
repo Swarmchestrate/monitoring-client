@@ -39,7 +39,7 @@ from swchmonclient import (
 )
 
 deploy_exit_code = deploy_monitoring(
-    "tosca_metrics_ze.yaml",
+    "stressng.yaml",
     "http://optimusdb.example/swarmkb",
 )
 
@@ -293,7 +293,7 @@ Runnable examples are available under `examples/`:
 from swchmonclient import deploy_monitoring
 
 exit_code = deploy_monitoring(
-    "tosca_metrics_ze.yaml",
+    "stressng.yaml",
     "http://optimusdb.example/swarmkb",
     use_kb=True,
 )

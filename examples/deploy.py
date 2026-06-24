@@ -1,9 +1,9 @@
 from swchmonclient import deploy_monitoring
 
 # Set to the path of your SAT file
-EMS_SAT_FILE = "tosca_metrics_ze.yaml"
+EMS_SAT_FILE = "stressng.yaml"
 # Set to the URL of your EMS OptimusDB instance
-EMS_OPTIMUSDB_URL = "http://193.225.250.240/optimusdb1/swarmkb"
+EMS_OPTIMUSDB_URL = "http://optimusdb.swarmchestrate.sztaki.hu/optimusdb1/swarmkb"
 # Set to False to disable knowledge base mode in the rendered EMS config
 EMS_USE_KB = True
 
