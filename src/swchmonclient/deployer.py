@@ -21,10 +21,10 @@ MONITORING_DEPLOY_MANIFESTS = (
     "./manifests/ems+netdata-k3s_parametric.yaml",
 )
 MONITORING_UNDEPLOY_MANIFESTS = (
-    MONITORING_TEMPLATE_MANIFEST,
     "./manifests/ems+netdata-k3s_parametric.yaml",
 )
 MONITORING_EXTRA_RESOURCES_TO_DELETE = (
+    ("v1", "ConfigMap", "emsconfig", "configmap"),
     ("apps/v1", "DaemonSet", "ems-client-daemonset", "daemonset"),
     ("v1", "ConfigMap", "ems-client-configmap", "configmap"),
     ("v1", "ConfigMap", "monitoring-configmap", "configmap"),
@@ -382,8 +382,8 @@ def _ensure_monitoring_manifest(manifest_path: str, logger: Logger) -> None:
     logger.info("Downloaded manifest to %s.", manifest_path)
 
 
-def _ensure_monitoring_manifests(logger: Logger) -> None:
-    for manifest_path in MONITORING_MANIFEST_RELEASE_URLS:
+def _ensure_monitoring_manifests(manifest_paths: Sequence[str], logger: Logger) -> None:
+    for manifest_path in manifest_paths:
         _ensure_monitoring_manifest(manifest_path, logger)
 
 
@@ -528,6 +528,7 @@ def _undeploy_manifests_with_optional_render(
 def deploy_monitoring(
     sat_file: str,
     optimusdb_url: str,
+    use_kb: bool = True,
     logger: Logger | None = None,
 ) -> int:
     """Deploy the standard monitoring stack manifests."""
@@ -535,7 +536,7 @@ def deploy_monitoring(
 
     active_logger = logger or configure_stdout_logger("swchmonclient.deploy_monitoring")
     try:
-        _ensure_monitoring_manifests(active_logger)
+        _ensure_monitoring_manifests(MONITORING_DEPLOY_MANIFESTS, active_logger)
     except DeploymentError as error:
         active_logger.error("  ERROR: %s", error)
         active_logger.info("One or more manifests failed to deploy.")
@@ -546,6 +547,7 @@ def deploy_monitoring(
         template_variables={
             "sat_file": sat_file,
             "optimusdb_url": optimusdb_url,
+            "use_kb": use_kb,
         },
         logger=active_logger,
         logger_name="swchmonclient.deploy_monitoring",
@@ -553,8 +555,6 @@ def deploy_monitoring(
 
 
 def undeploy_monitoring(
-    sat_file: str,
-    optimusdb_url: str,
     namespace: str | None = None,
     logger: Logger | None = None,
 ) -> int:
@@ -563,7 +563,7 @@ def undeploy_monitoring(
 
     active_logger = logger or configure_stdout_logger("swchmonclient.undeploy_monitoring")
     try:
-        _ensure_monitoring_manifests(active_logger)
+        _ensure_monitoring_manifests(MONITORING_UNDEPLOY_MANIFESTS, active_logger)
     except DeploymentError as error:
         active_logger.error("  ERROR: %s", error)
         active_logger.info("One or more manifests failed to undeploy.")
@@ -571,11 +571,6 @@ def undeploy_monitoring(
     return _undeploy_manifests_with_optional_render(
         manifests=MONITORING_UNDEPLOY_MANIFESTS,
         namespace=namespace,
-        template_manifest_path=MONITORING_TEMPLATE_MANIFEST,
-        template_variables={
-            "sat_file": sat_file,
-            "optimusdb_url": optimusdb_url,
-        },
         extra_resources_to_delete=MONITORING_EXTRA_RESOURCES_TO_DELETE,
         logger=active_logger,
         logger_name="swchmonclient.undeploy_monitoring",

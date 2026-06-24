@@ -52,8 +52,6 @@ raw_values = query_metric_values_raw("cpu_util_instance", seconds=60)
 unsubscribe_metric("cpu_util_instance")
 
 undeploy_exit_code = undeploy_monitoring(
-    "tosca_metrics_ze.yaml",
-    "http://optimusdb.example/swarmkb",
     namespace="default",
 )
 ```
@@ -171,30 +169,29 @@ If you subscribe multiple raw metrics for the same node/IP, the library reuses t
 
 ## API Reference
 
-### `deploy_monitoring(sat_file: str, optimusdb_url: str, logger: logging.Logger | None = None) -> int`
+### `deploy_monitoring(sat_file: str, optimusdb_url: str, use_kb: bool = True, logger: logging.Logger | None = None) -> int`
 
 Deploys the standard monitoring stack manifests.
 
-This helper uses in-cluster Kubernetes config loaded from the pod's service account. It does not read a local kubeconfig. The service account used by the pod must have RBAC permission to create or patch the Kubernetes resources defined by the monitoring manifests. If `./manifests/emsconfig.yaml` or `./manifests/ems+netdata-k3s_parametric.yaml` is missing locally, the library downloads it from the `v0.1.0` release assets before deployment. When a local copy already exists, it validates the content against the release asset, logs whether it matches, and replaces the file if it differs.
+This helper uses in-cluster Kubernetes config loaded from the pod's service account. It does not read a local kubeconfig. The service account used by the pod must have RBAC permission to create or patch the Kubernetes resources defined by the monitoring manifests. The `sat_file`, `optimusdb_url`, and `use_kb` values are injected into the rendered manifest. By default, `use_kb=True`, so EMS is configured to resolve the SAT through the knowledge base exposed by the provided `optimusdb_url`. Set `use_kb=False` to keep knowledge-base mode disabled in the rendered manifest. If `./manifests/emsconfig.yaml` or `./manifests/ems+netdata-k3s_parametric.yaml` is missing locally, the library downloads it from the `v0.1.0` release assets before deployment. When a local copy already exists, it validates the content against the release asset, logs whether it matches, and replaces the file if it differs.
 
 | Parameter | Required | Type | Description |
 | --- | --- | --- | --- |
 | `sat_file` | Yes | `str` | SAT file path injected into the templated manifest. |
-| `optimusdb_url` | Yes | `str` | OptimusDB URL injected into the templated manifest. |
+| `optimusdb_url` | Yes | `str` | OptimusDB URL injected into the templated manifest. Used by default because `use_kb` defaults to `True`. |
+| `use_kb` | No | `bool` | Controls the rendered `USE_KB` value in `emsconfig.yaml`. Defaults to `True`. Set to `False` to disable knowledge base mode. |
 | `logger` | No | `logging.Logger \| None` | Custom logger. If omitted, stdout logging is configured automatically. |
 
 **Output:** process-style exit code: `0` on success, `1` if one or more deploy steps fail.
 
-### `undeploy_monitoring(sat_file: str, optimusdb_url: str, namespace: str | None = None, logger: logging.Logger | None = None) -> int`
+### `undeploy_monitoring(namespace: str | None = None, logger: logging.Logger | None = None) -> int`
 
 Undeploys the standard monitoring stack manifests and the related cleanup resources.
 
-Like deployment, undeploy uses in-cluster Kubernetes config loaded from the pod's service account and does not read a local kubeconfig. That service account must have RBAC permission to delete the Kubernetes resources defined by the manifests and the additional cleanup resources. Undeploy also ensures the two required monitoring manifests are available locally, logs whether existing local copies match the published release assets, and refreshes differing files from the release.
+Like deployment, undeploy uses in-cluster Kubernetes config loaded from the pod's service account and does not read a local kubeconfig. That service account must have RBAC permission to delete the Kubernetes resources defined by the manifests and the additional cleanup resources. Unlike deployment, undeploy does not render `emsconfig.yaml` and does not require the original `sat_file`, `optimusdb_url`, or `use_kb` values. It deletes `ConfigMap/emsconfig` directly by name and undeploys the remaining manifest-defined resources from the static manifest files.
 
 | Parameter | Required | Type | Description |
 | --- | --- | --- | --- |
-| `sat_file` | Yes | `str` | SAT file path used to render the templated manifest before undeploy. |
-| `optimusdb_url` | Yes | `str` | OptimusDB URL used to render the templated manifest before undeploy. |
 | `namespace` | No | `str \| None` | Namespace override for deleting namespaced resources. If omitted, manifest/default namespaces are used. |
 | `logger` | No | `logging.Logger \| None` | Custom logger. If omitted, stdout logging is configured automatically. |
 
@@ -295,7 +292,11 @@ Runnable examples are available under `examples/`:
 ```python
 from swchmonclient import deploy_monitoring
 
-exit_code = deploy_monitoring("tosca_metrics_ze.yaml", "http://optimusdb.example/swarmkb")
+exit_code = deploy_monitoring(
+    "tosca_metrics_ze.yaml",
+    "http://optimusdb.example/swarmkb",
+    use_kb=True,
+)
 ```
 
 ### `undeploy_monitoring`
@@ -304,8 +305,6 @@ exit_code = deploy_monitoring("tosca_metrics_ze.yaml", "http://optimusdb.example
 from swchmonclient import undeploy_monitoring
 
 exit_code = undeploy_monitoring(
-    "tosca_metrics_ze.yaml",
-    "http://optimusdb.example/swarmkb",
     namespace="default",
 )
 ```
