@@ -371,15 +371,17 @@ def _ensure_monitoring_manifest(manifest_path: str, logger: Logger) -> None:
         if local_content == release_content:
             logger.info("Local manifest %s matches release asset.", manifest_path)
         else:
-            logger.warning("Local manifest %s differs from release asset %s.", manifest_path, release_url)
-            _write_manifest_file(manifest_path, release_content)
-            logger.info("Downloaded updated manifest to %s.", manifest_path)
+            logger.warning(
+                "Local manifest %s differs from release asset %s. Keeping local file.",
+                manifest_path,
+                release_url,
+            )
         return
 
-    logger.info("Local manifest %s not found. Downloading from %s ...", manifest_path, release_url)
+    logger.info("Fetching manifest %s from release asset %s.", manifest_path, release_url)
     release_content = _fetch_manifest_release_bytes(release_url)
     _write_manifest_file(manifest_path, release_content)
-    logger.info("Downloaded manifest to %s.", manifest_path)
+    logger.info("Wrote manifest to %s.", manifest_path)
 
 
 def _ensure_monitoring_manifests(manifest_paths: Sequence[str], logger: Logger) -> None:
