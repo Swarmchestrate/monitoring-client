@@ -1,6 +1,6 @@
 [project]
 name = "swchmonclient"
-version = "0.2.0"
+version = "0.2.1-rc1"
 description = "Kubernetes manifest deploy, readiness monitoring, threaded exporter integration, and cleanup tooling."
 readme = "README.md"
 requires-python = ">=3.12"

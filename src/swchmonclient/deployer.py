@@ -16,6 +16,8 @@ from .exceptions import DeploymentError
 
 
 MONITORING_TEMPLATE_MANIFEST = "./manifests/emsconfig.yaml"
+TOSCA_MODEL_CONFIGMAP_NAME = "tosca-model-configmap"
+TOSCA_MODEL_CONFIGMAP_KEY = "test-tosca-model.yaml"
 MONITORING_DEPLOY_MANIFESTS = (
     MONITORING_TEMPLATE_MANIFEST,
     "./manifests/ems+netdata-k3s_parametric.yaml",
@@ -25,6 +27,7 @@ MONITORING_UNDEPLOY_MANIFESTS = (
 )
 MONITORING_EXTRA_RESOURCES_TO_DELETE = (
     ("v1", "ConfigMap", "emsconfig", "configmap"),
+    ("v1", "ConfigMap", TOSCA_MODEL_CONFIGMAP_NAME, "configmap"),
     ("apps/v1", "DaemonSet", "ems-client-daemonset", "daemonset"),
     ("v1", "ConfigMap", "ems-client-configmap", "configmap"),
     ("v1", "ConfigMap", "monitoring-configmap", "configmap"),
@@ -389,6 +392,70 @@ def _ensure_monitoring_manifests(manifest_paths: Sequence[str], logger: Logger) 
         _ensure_monitoring_manifest(manifest_path, logger)
 
 
+def _render_tosca_model_configmap_manifest(sat_file: str) -> str:
+    sat_path = Path(sat_file)
+    try:
+        sat_content = sat_path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise DeploymentError(f"Unable to read SAT file {sat_file}: {error}") from error
+
+    manifest = {
+        "apiVersion": "v1",
+        "kind": "ConfigMap",
+        "metadata": {
+            "name": TOSCA_MODEL_CONFIGMAP_NAME,
+            "namespace": DEFAULT_MONITORING_NAMESPACE,
+        },
+        "data": {
+            TOSCA_MODEL_CONFIGMAP_KEY: sat_content,
+        },
+    }
+
+    with NamedTemporaryFile(mode="w", suffix=".yaml", delete=False, encoding="utf-8") as temp_file:
+        yaml.safe_dump(manifest, temp_file, sort_keys=False)
+        return temp_file.name
+
+
+def _deploy_tosca_model_configmap(
+    sat_file: str,
+    logger: Logger,
+) -> int:
+    deployer = K8sDeployer()
+    rendered_manifest_path: str | None = None
+
+    try:
+        rendered_manifest_path = _render_tosca_model_configmap_manifest(sat_file)
+        logger.info(
+            "Deploying ConfigMap/%s from SAT file %s ...",
+            TOSCA_MODEL_CONFIGMAP_NAME,
+            sat_file,
+        )
+        deployed = deployer.deploy_manifest(rendered_manifest_path)
+    except DeploymentError as error:
+        logger.error("  ERROR: %s", error)
+        return 1
+    finally:
+        if rendered_manifest_path and os.path.exists(rendered_manifest_path):
+            os.unlink(rendered_manifest_path)
+
+    if not deployed:
+        logger.info("No valid Kubernetes resources found in the SAT ConfigMap manifest.")
+        return 0
+
+    logger.info("  Created or patched resources:")
+    for resource in deployed:
+        namespace = resource.get("namespace") or "<cluster-scoped>"
+        logger.info(
+            "  - %s/%s (apiVersion=%s, namespace=%s)",
+            resource["kind"],
+            resource["name"],
+            resource["apiVersion"],
+            namespace,
+        )
+
+    return 0
+
+
 def _deploy_manifests_with_optional_render(
     manifests: Sequence[str],
     template_manifest_path: str | None = None,
@@ -541,6 +608,9 @@ def deploy_monitoring(
         _ensure_monitoring_manifests(MONITORING_DEPLOY_MANIFESTS, active_logger)
     except DeploymentError as error:
         active_logger.error("  ERROR: %s", error)
+        active_logger.info("One or more manifests failed to deploy.")
+        return 1
+    if _deploy_tosca_model_configmap(sat_file, active_logger) != 0:
         active_logger.info("One or more manifests failed to deploy.")
         return 1
     return _deploy_manifests_with_optional_render(
