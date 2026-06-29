@@ -668,7 +668,11 @@ def deploy_monitoring(
         active_logger.error("  ERROR: %s", error)
         active_logger.info("One or more manifests failed to deploy.")
         return 1
-    if upload_kb:
+    if upload_kb and not use_kb:
+        active_logger.warning(
+            "upload_kb=True is ignored because use_kb=False; skipping knowledge base upload."
+        )
+    elif upload_kb:
         try:
             _upload_sat_to_kb(sat_file, deployed_sat_filename, sat_content, active_logger)
         except DeploymentError as error:
