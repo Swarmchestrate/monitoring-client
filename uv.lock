@@ -334,13 +334,14 @@ wheels = [
 
 [[package]]
 name = "swchmonclient"
-version = "0.2.1rc1"
+version = "0.2.1rc2"
 source = { editable = "." }
 dependencies = [
     { name = "jinja2" },
     { name = "kubernetes" },
     { name = "python-dotenv" },
     { name = "pyyaml" },
+    { name = "requests" },
     { name = "stomp-py" },
 ]
 
@@ -350,6 +351,7 @@ requires-dist = [
     { name = "kubernetes", specifier = "==35.0.0" },
     { name = "python-dotenv", specifier = "==1.2.2" },
     { name = "pyyaml", specifier = "==6.0.3" },
+    { name = "requests", specifier = "==2.33.0" },
     { name = "stomp-py", specifier = "==9.0.0" },
 ]
 
