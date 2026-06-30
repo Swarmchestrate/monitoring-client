@@ -25,37 +25,17 @@ uv add swchmonclient
 > **Important:** `deploy_monitoring(...)` and `undeploy_monitoring(...)` use in-cluster Kubernetes configuration. Run them from a pod that has a mounted service account token and RBAC permission to create, patch, get, list, and delete the Kubernetes resources referenced by the monitoring manifests.
 
 
-## Quick Example
+## Getting started
 
-```python
-from swchmonclient import (
-    deploy_monitoring,
-    query_metric_values,
-    query_metric_values_raw,
-    subscribe_metric,
-    subscribe_metric_raw,
-    undeploy_monitoring,
-    unsubscribe_metric,
-)
+See the [Step-by-step guide](#step-by-step-guide) for the full deployment and subscription flow.
 
-deploy_exit_code = deploy_monitoring(
-    "./manifests/stressng.yaml",
-    "http://optimusdb.example/swarmkb",
-    upload_kb=False,
-)
+For runnable scripts, see [Examples](#examples). For the individual function signatures, see [Simple Snippets](#simple-snippets) and the [API Reference](#api-reference).
 
-thread_name = subscribe_metric("cpu_util_instance")
-recent_values = query_metric_values("cpu_util_instance")
+## Available Metrics
 
-raw_threads = subscribe_metric_raw("cpu_util_instance", ["10.0.0.1", "10.0.0.2"])
-raw_values = query_metric_values_raw("cpu_util_instance", seconds=60)
-
-unsubscribe_metric("cpu_util_instance")
-
-undeploy_exit_code = undeploy_monitoring(
-    namespace="default",
-)
-```
+| Metric name | Description |
+| --- | --- |
+| `cpu_util_prct` | CPU utilization percentage. |
 
 ## Raw Metric Subscriptions
 
@@ -284,8 +264,8 @@ Runnable examples are available under `examples/`:
 
 - `examples/deploy.py`
 - `examples/undeploy.py`
-- `examples/subscribe_cpu_util_instance.py`
-- `examples/subscribe_cpu_util_instance_raw.py`
+- `examples/subscribe_metric.py`
+- `examples/subscribe_metric_raw.py`
 
 ## Simple Snippets
 
@@ -326,10 +306,21 @@ print(thread_name)
 ```python
 from swchmonclient import subscribe_metric_raw
 
-threads = subscribe_metric_raw("cpu_util_instance", "local")
-# or: subscribe_metric_raw("cpu_util_instance", "local", cache_size=500)
-# or: subscribe_metric_raw("cpu_util_instance", "all")  # IMPORTANT: requires Kubernetes config
-# or: subscribe_metric_raw("cpu_util_instance", ["10.0.0.1", "10.0.0.2"])
+METRIC_NAME = "cpu_util_prct"
+NODES = ["10.0.0.1", "10.0.0.2"]
+
+# Option 1: Subscribe to the raw metric for specific nodes.
+# Use this when you want metric data only from the nodes listed in the NODES variable.
+# threads = subscribe_metric_raw(METRIC_NAME, NODES)
+
+# Option 2: Subscribe to the raw metric for the local node only.
+# Use this when you want metric data only from the node running this code.
+# threads = subscribe_metric_raw(METRIC_NAME, "local")
+
+# Option 3: Subscribe to the raw metric for all nodes.
+# Use this when you want metric data from every available node.
+threads = subscribe_metric_raw(METRIC_NAME, "all")
+
 print(threads)
 ```
 
