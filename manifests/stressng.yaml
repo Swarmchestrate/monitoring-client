@@ -46,9 +46,9 @@ service_template:
           properties:
             raw:
             - name: cpu_util_instance
-              sensor: "Netdata"
+              sensor: "netdata"
               config:
-                scope_contexts: k8s.cgroup.cpu
+                scope_contexts: system.cpu
                 results-aggregation: SUM
               collection_frequency: "30 sec"
               collection_output: "all"
