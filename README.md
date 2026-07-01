@@ -33,6 +33,8 @@ For runnable scripts, see [Examples](#examples). For the individual function sig
 
 ## Available Metrics
 
+The table below is a placeholder for available metrics. Additional metrics will be finalized later.
+
 | Metric name | Description |
 | --- | --- |
 | `cpu_util_prct` | CPU utilization percentage. |
