@@ -9,7 +9,17 @@ This guide walks through deploying a two-node k3s cluster, preparing a service a
   - [1.1 Install k3s on the master and get the join token](#11-install-k3s-on-the-master-and-get-the-join-token)
   - [1.2 Join the worker node](#12-join-the-worker-node)
 - [2) Create the service account and deploy a test pod](#2-create-the-service-account-and-deploy-a-test-pod)
+  - [2.1 Clone the monitoring-client repository](#21-clone-the-monitoring-client-repository)
+  - [2.2 Create the `mon-client` service account and RBAC](#22-create-the-mon-client-service-account-and-rbac)
+  - [2.3 Verify RBAC](#23-verify-rbac)
+  - [2.4 Deploy a test pod](#24-deploy-a-test-pod)
 - [3) Install swchmonclient, deploy monitoring, and gather metrics](#3-install-swchmonclient-deploy-monitoring-and-gather-metrics)
+  - [3.1 Install the library](#31-install-the-library)
+  - [3.2 API overview](#32-api-overview)
+  - [3.3 Deploy the monitoring stack](#33-deploy-the-monitoring-stack)
+  - [3.4 Gather SLO or Composite metrics (EPM)](#34-gather-slo-or-composite-metrics-epm)
+  - [3.5 Gather raw metrics directly from node IPs (EPA)](#35-gather-raw-metrics-directly-from-node-ips-epa)
+  - [3.6 Undeploy the monitoring stack](#36-undeploy-the-monitoring-stack)
 - [Appendix: Namespace-parametric RBAC](#appendix-namespace-parametric-rbac)
 - [Troubleshooting](#troubleshooting)
 
@@ -44,7 +54,7 @@ curl -sfL https://get.k3s.io | sh -
 Verify the node is up:
 
 ```bash
-sudo k3s kubectl get nodes
+sudo kubectl get nodes
 ```
 
 Expected output (status `Ready`):
@@ -106,7 +116,7 @@ curl -sfL https://get.k3s.io | K3S_URL=https://192.168.0.135:6443 K3S_TOKEN=K109
 Back on the **master**, verify the worker joined:
 
 ```bash
-sudo k3s kubectl get nodes -o wide
+sudo kubectl get nodes -o wide
 ```
 
 Expected output:
@@ -144,7 +154,7 @@ The service account needs two sets of permissions:
 The repository's `./manifests/mon-client-rbac.yaml` contains everything. Apply it:
 
 ```bash
-kubectl apply -f ./manifests/mon-client-rbac.yaml
+sudo kubectl apply -f ./manifests/mon-client-rbac.yaml
 ```
 
 > If you deploy outside the `default` namespace, update the namespace fields in the manifest before applying.
@@ -155,14 +165,14 @@ If you need a namespace-parametric RBAC manifest instead of editing the bundled 
 ### 2.3 Verify RBAC
 
 ```bash
-kubectl auth can-i get pods --as=system:serviceaccount:default:mon-client -n default
-kubectl auth can-i get nodes --as=system:serviceaccount:default:mon-client
-kubectl auth can-i list nodes --as=system:serviceaccount:default:mon-client
+sudo kubectl auth can-i get pods --as=system:serviceaccount:default:mon-client -n default
+sudo kubectl auth can-i get nodes --as=system:serviceaccount:default:mon-client
+sudo kubectl auth can-i list nodes --as=system:serviceaccount:default:mon-client
 # deployer permissions:
-kubectl auth can-i create configmaps --as=system:serviceaccount:default:mon-client -n default
-kubectl auth can-i create daemonsets --as=system:serviceaccount:default:mon-client -n default
-kubectl auth can-i create deployments --as=system:serviceaccount:default:mon-client -n default
-kubectl auth can-i delete clusterroles --as=system:serviceaccount:default:mon-client
+sudo kubectl auth can-i create configmaps --as=system:serviceaccount:default:mon-client -n default
+sudo kubectl auth can-i create daemonsets --as=system:serviceaccount:default:mon-client -n default
+sudo kubectl auth can-i create deployments --as=system:serviceaccount:default:mon-client -n default
+sudo kubectl auth can-i delete clusterroles --as=system:serviceaccount:default:mon-client
 ```
 
 All should return `yes`. If you installed into another namespace, replace `default` with your namespace in both `--as=system:serviceaccount:default:mon-client` and `-n default`. If you later see `Failed to list Kubernetes nodes: Forbidden` or `Failed to determine current Kubernetes node IP: Forbidden`, the service account authenticates but lacks RBAC.
@@ -174,15 +184,15 @@ All should return `yes`. If you installed into another namespace, replace `defau
 > If you installed `mon-client` outside the `default` namespace, update the `namespace` field in `./manifests/mon-client-test-pod.yaml` before applying it. The bundled test pod manifest uses `default`.
 
 ```bash
-kubectl apply -f ./manifests/mon-client-test-pod.yaml
+sudo kubectl apply -f ./manifests/mon-client-test-pod.yaml
 ```
 
 Wait for it to become ready, then open a shell:
 
 ```bash
-kubectl wait --for=condition=Ready pod/python-shell --timeout=120s
-kubectl get pod python-shell
-kubectl exec -it python-shell -- bash
+sudo kubectl wait --for=condition=Ready pod/python-shell --timeout=120s
+sudo kubectl get pod python-shell
+sudo kubectl exec -it python-shell -- bash
 ```
 
 If you installed into another namespace, add `-n <NAMESPACE>` to these `kubectl` commands.
@@ -212,7 +222,11 @@ cd monitoring-client
 
 > **Note:** Always check for the latest version on [PyPI](https://pypi.org/project/swchmonclient/) or the [GitHub releases page](https://github.com/Swarmchestrate/monitoring-client/releases) and install that instead.
 
-### 3.2 The `deploy_monitoring` API
+### 3.2 API overview
+
+This section summarizes the functions used in the deployment, subscription, raw subscription, and undeploy steps below.
+
+#### `deploy_monitoring(...)`
 
 ```python
 deploy_monitoring(
@@ -238,9 +252,7 @@ Default `optimusdb_url`: `http://optimusdb.swarmchestrate.sztaki.hu/optimusdb1/s
 
 **Output:** a process-style exit code. `0` on success, `1` if one or more deploy steps fail.
 
-`undeploy_monitoring(namespace: str | None = None, logger: logging.Logger | None = None) -> int` does **not** take `sat_file` or `optimusdb_url`. It deletes `ConfigMap/emsconfig` and `ConfigMap/tosca-model-configmap` by name and undeploys the remaining resources from the static manifest files. It likewise returns `0` / `1`.
-
-#### The SAT file input parameter
+**SAT file input parameter:**
 
 A **SAT (Swarm Application Template)** is the main application input to a Swarmchestrate Universe. Application owners author a SAT, which defines the microservices and resource requirements that make up an application.
 
@@ -253,9 +265,65 @@ How the SAT is resolved depends on `use_kb`:
 
 > **Note:** SAT uploading is now built into `deploy_monitoring(...)` via `upload_kb=True`
 
+#### `subscribe_metric(...)`
+
+```python
+subscribe_metric(metric: str) -> str
+query_metric_values(metric: str) -> list[Any]
+unsubscribe_metric(metric: str) -> None
+```
+
+`subscribe_metric(...)` starts or reuses the shared EPM listener for a standard metric topic. Plain metric names are normalized to `/topic/<metric>`.
+
+| Parameter | Required | Type | Description |
+| --- | --- | --- | --- |
+| `metric` | Yes | `str` | Metric name or full topic destination. |
+
+`query_metric_values(...)` returns and consumes buffered values for the metric. `unsubscribe_metric(...)` stops the subscription.
+
+#### `subscribe_metric_raw(...)`
+
+```python
+subscribe_metric_raw(
+    metric: str,
+    node: list[str] | str,
+    cache_size: int | None = None,
+) -> dict[str, str]
+query_metric_values_raw(metric: str, seconds: int) -> dict[str, list[dict[str, Any]]]
+unsubscribe_metric(metric: str, nodes: list[str] | None = None) -> None
+```
+
+`subscribe_metric_raw(...)` starts raw metric listeners that connect directly to node IPs.
+
+| Parameter | Required | Type | Description |
+| --- | --- | --- | --- |
+| `metric` | Yes | `str` | Metric name or full topic destination. |
+| `node` | Yes | `list[str] \| str` | Explicit node/IP list, `"all"` for all nodes, or `"local"` for the current node. |
+| `cache_size` | No | `int \| None` | Per metric per node sample buffer size. Defaults to `1000`. |
+
+`query_metric_values_raw(...)` returns and consumes buffered raw values from the requested time window. `unsubscribe_metric(...)` stops all raw node listeners for the metric, or only the nodes passed with `nodes=`.
+
+#### `undeploy_monitoring(...)`
+
+```python
+undeploy_monitoring(
+    namespace: str | None = None,
+    logger: logging.Logger | None = None,
+) -> int
+```
+
+`undeploy_monitoring(...)` removes the monitoring stack and its cleanup resources. Unlike deploy, it does **not** take `sat_file`, `optimusdb_url`, `use_kb`, or `upload_kb`. It deletes `ConfigMap/emsconfig` and `ConfigMap/tosca-model-configmap` by name and undeploys the remaining manifest-defined resources from the static manifest files.
+
+| Parameter | Required | Type | Description |
+| --- | --- | --- | --- |
+| `namespace` | No | `str \| None` | Namespace override for deleting namespaced resources. If omitted, manifest/default namespaces are used. |
+| `logger` | No | `logging.Logger \| None` | Custom logger. If omitted, stdout logging is configured automatically. |
+
+**Output:** a process-style exit code. `0` on success, `1` if one or more undeploy steps fail.
+
 ### 3.3 Deploy the monitoring stack
 
-> Before running the example, set `USE_KB` and `UPLOAD_KB` in `./examples/deploy.py` for your deployment. Use `USE_KB=True` and `UPLOAD_KB=True` when the script should upload the SAT and EMS should resolve it through the knowledgebase. Use `USE_KB=False` when the script should read the SAT from the local path and deploy it in that without using KB.
+> Before running the example, set `USE_KB` and `UPLOAD_KB` in `./examples/deploy.py` for your deployment. Use `USE_KB=True` and `UPLOAD_KB=True` when the script should upload the SAT and EMS should resolve it through the knowledgebase. Use `USE_KB=False` when the script should read the SAT from the local path and deploy it in the ConfigMap.
 
 ```
 python ./examples/deploy.py
@@ -264,33 +332,39 @@ python ./examples/deploy.py
 Expected output:
 
 ```log
-2026-06-24 13:12:54,344 INFO swchmonclient.deploy_monitoring: Found local manifest ./manifests/emsconfig.yaml.
-2026-06-24 13:12:54,570 WARNING swchmonclient.deploy_monitoring: Local manifest ./manifests/emsconfig.yaml differs from release asset https://github.com/Swarmchestrate/monitoring-client/releases/download/v0.1.0/emsconfig.yaml. Keeping local file.
-2026-06-24 13:12:54,570 INFO swchmonclient.deploy_monitoring: Found local manifest ./manifests/ems+netdata-k3s_parametric.yaml.
-2026-06-24 13:12:54,665 WARNING swchmonclient.deploy_monitoring: Local manifest ./manifests/ems+netdata-k3s_parametric.yaml differs from release asset https://github.com/Swarmchestrate/monitoring-client/releases/download/v0.1.0/ems+netdata-k3s_parametric.yaml. Keeping local file.
-2026-06-24 13:12:54,714 INFO swchmonclient.deploy_monitoring: Deploying ./manifests/emsconfig.yaml with variables:
-2026-06-24 13:12:54,714 INFO swchmonclient.deploy_monitoring:     • sat_file: stressng.yaml
-2026-06-24 13:12:54,714 INFO swchmonclient.deploy_monitoring:     • optimusdb_url: http://optimusdb.swarmchestrate.sztaki.hu/optimusdb1/swarmkb
-2026-06-24 13:12:54,714 INFO swchmonclient.deploy_monitoring:     • use_kb: True
-2026-06-24 13:12:54,737 INFO swchmonclient.deploy_monitoring:   Created or patched resources:
-2026-06-24 13:12:54,737 INFO swchmonclient.deploy_monitoring:   - ConfigMap/emsconfig (apiVersion=v1, namespace=default)
-2026-06-24 13:12:54,737 INFO swchmonclient.deploy_monitoring: Deploying ./manifests/ems+netdata-k3s_parametric.yaml ...
-2026-06-24 13:12:54,953 INFO swchmonclient.deploy_monitoring:   Created or patched resources:
-2026-06-24 13:12:54,953 INFO swchmonclient.deploy_monitoring:   - ServiceAccount/netdata (apiVersion=v1, namespace=default)
-2026-06-24 13:12:54,954 INFO swchmonclient.deploy_monitoring:   - ConfigMap/netdata-conf-child (apiVersion=v1, namespace=default)
-2026-06-24 13:12:54,954 INFO swchmonclient.deploy_monitoring:   - ConfigMap/netdata-child-sd-config-map (apiVersion=v1, namespace=default)
-2026-06-24 13:12:54,954 INFO swchmonclient.deploy_monitoring:   - ClusterRole/netdata (apiVersion=rbac.authorization.k8s.io/v1, namespace=<cluster-scoped>)
-2026-06-24 13:12:54,954 INFO swchmonclient.deploy_monitoring:   - ClusterRoleBinding/netdata (apiVersion=rbac.authorization.k8s.io/v1, namespace=<cluster-scoped>)
-2026-06-24 13:12:54,954 INFO swchmonclient.deploy_monitoring:   - DaemonSet/netdata-child (apiVersion=apps/v1, namespace=default)
-2026-06-24 13:12:54,954 INFO swchmonclient.deploy_monitoring:   - ServiceAccount/ems-server-service-account (apiVersion=v1, namespace=default)
-2026-06-24 13:12:54,954 INFO swchmonclient.deploy_monitoring:   - ClusterRole/ems-server-cluster-role (apiVersion=rbac.authorization.k8s.io/v1, namespace=<cluster-scoped>)
-2026-06-24 13:12:54,954 INFO swchmonclient.deploy_monitoring:   - ClusterRoleBinding/ems-server-cluster-role-binding (apiVersion=rbac.authorization.k8s.io/v1, namespace=<cluster-scoped>)
-2026-06-24 13:12:54,954 INFO swchmonclient.deploy_monitoring:   - Role/ems-server-role (apiVersion=rbac.authorization.k8s.io/v1, namespace=default)
-2026-06-24 13:12:54,954 INFO swchmonclient.deploy_monitoring:   - RoleBinding/ems-server-role-binding (apiVersion=rbac.authorization.k8s.io/v1, namespace=default)
-2026-06-24 13:12:54,954 INFO swchmonclient.deploy_monitoring:   - Service/emsserver-ems-server (apiVersion=v1, namespace=default)
-2026-06-24 13:12:54,954 INFO swchmonclient.deploy_monitoring:   - ConfigMap/tosca-script-config (apiVersion=v1, namespace=default)
-2026-06-24 13:12:54,954 INFO swchmonclient.deploy_monitoring:   - Deployment/emsserver-ems-server (apiVersion=apps/v1, namespace=default)
-2026-06-24 13:12:54,955 INFO swchmonclient.deploy_monitoring: All manifests deployed successfully.
+2026-07-01 12:36:40,676 INFO swchmonclient.deploy_monitoring: Found local manifest ./manifests/emsconfig.yaml.
+2026-07-01 12:36:41,135 WARNING swchmonclient.deploy_monitoring: Local manifest ./manifests/emsconfig.yaml differs from release asset https://github.com/Swarmchestrate/monitoring-client/releases/download/v0.1.0/emsconfig.yaml. Keeping local file.
+2026-07-01 12:36:41,136 INFO swchmonclient.deploy_monitoring: Found local manifest ./manifests/ems+netdata-k3s_parametric.yaml.
+2026-07-01 12:36:41,529 WARNING swchmonclient.deploy_monitoring: Local manifest ./manifests/ems+netdata-k3s_parametric.yaml differs from release asset https://github.com/Swarmchestrate/monitoring-client/releases/download/v0.1.0/ems+netdata-k3s_parametric.yaml. Keeping local file.
+2026-07-01 12:36:41,530 INFO swchmonclient.deploy_monitoring: Uploading SAT file /monitoring-client/manifests/stressng.yaml to the knowledge base as stressng-20260701123641529960.yaml ...
+2026-07-01 12:36:41,884 INFO swchmonclient.deploy_monitoring: Uploaded SAT file stressng-20260701123641529960.yaml to the knowledge base.
+2026-07-01 12:36:41,899 INFO swchmonclient.deploy_monitoring: Deploying ConfigMap/tosca-model-configmap from SAT file /monitoring-client/manifests/stressng.yaml ...
+2026-07-01 12:36:41,954 INFO swchmonclient.deploy_monitoring:   Created or patched resources:
+2026-07-01 12:36:41,954 INFO swchmonclient.deploy_monitoring:   - ConfigMap/tosca-model-configmap (apiVersion=v1, namespace=default)
+2026-07-01 12:36:42,002 INFO swchmonclient.deploy_monitoring: Deploying ./manifests/emsconfig.yaml with variables:
+2026-07-01 12:36:42,004 INFO swchmonclient.deploy_monitoring:     • sat_file: stressng-20260701123641529960.yaml
+2026-07-01 12:36:42,004 INFO swchmonclient.deploy_monitoring:     • optimusdb_url: http://optimusdb.swarmchestrate.sztaki.hu/optimusdb1/swarmkb
+2026-07-01 12:36:42,004 INFO swchmonclient.deploy_monitoring:     • use_kb: True
+2026-07-01 12:36:42,004 INFO swchmonclient.deploy_monitoring:     • upload_kb: True
+2026-07-01 12:36:42,072 INFO swchmonclient.deploy_monitoring:   Created or patched resources:
+2026-07-01 12:36:42,072 INFO swchmonclient.deploy_monitoring:   - ConfigMap/emsconfig (apiVersion=v1, namespace=default)
+2026-07-01 12:36:42,072 INFO swchmonclient.deploy_monitoring: Deploying ./manifests/ems+netdata-k3s_parametric.yaml ...
+2026-07-01 12:36:42,523 INFO swchmonclient.deploy_monitoring:   Created or patched resources:
+2026-07-01 12:36:42,523 INFO swchmonclient.deploy_monitoring:   - ServiceAccount/netdata (apiVersion=v1, namespace=default)
+2026-07-01 12:36:42,524 INFO swchmonclient.deploy_monitoring:   - ConfigMap/netdata-conf-child (apiVersion=v1, namespace=default)
+2026-07-01 12:36:42,524 INFO swchmonclient.deploy_monitoring:   - ConfigMap/netdata-child-sd-config-map (apiVersion=v1, namespace=default)
+2026-07-01 12:36:42,524 INFO swchmonclient.deploy_monitoring:   - ClusterRole/netdata (apiVersion=rbac.authorization.k8s.io/v1, namespace=<cluster-scoped>)
+2026-07-01 12:36:42,524 INFO swchmonclient.deploy_monitoring:   - ClusterRoleBinding/netdata (apiVersion=rbac.authorization.k8s.io/v1, namespace=<cluster-scoped>)
+2026-07-01 12:36:42,524 INFO swchmonclient.deploy_monitoring:   - DaemonSet/netdata-child (apiVersion=apps/v1, namespace=default)
+2026-07-01 12:36:42,524 INFO swchmonclient.deploy_monitoring:   - ServiceAccount/ems-server-service-account (apiVersion=v1, namespace=default)
+2026-07-01 12:36:42,524 INFO swchmonclient.deploy_monitoring:   - ClusterRole/ems-server-cluster-role (apiVersion=rbac.authorization.k8s.io/v1, namespace=<cluster-scoped>)
+2026-07-01 12:36:42,524 INFO swchmonclient.deploy_monitoring:   - ClusterRoleBinding/ems-server-cluster-role-binding (apiVersion=rbac.authorization.k8s.io/v1, namespace=<cluster-scoped>)
+2026-07-01 12:36:42,524 INFO swchmonclient.deploy_monitoring:   - Role/ems-server-role (apiVersion=rbac.authorization.k8s.io/v1, namespace=default)
+2026-07-01 12:36:42,524 INFO swchmonclient.deploy_monitoring:   - RoleBinding/ems-server-role-binding (apiVersion=rbac.authorization.k8s.io/v1, namespace=default)
+2026-07-01 12:36:42,524 INFO swchmonclient.deploy_monitoring:   - Service/emsserver-ems-server (apiVersion=v1, namespace=default)
+2026-07-01 12:36:42,524 INFO swchmonclient.deploy_monitoring:   - ConfigMap/tosca-script-config (apiVersion=v1, namespace=default)
+2026-07-01 12:36:42,524 INFO swchmonclient.deploy_monitoring:   - Deployment/emsserver-ems-server (apiVersion=apps/v1, namespace=default)
+2026-07-01 12:36:42,524 INFO swchmonclient.deploy_monitoring: All manifests deployed successfully.
 Monitoring deployed successfully.
 ```
 
@@ -302,16 +376,18 @@ Notes:
 Verify on the master that monitoring workloads are coming up:
 
 ```bash
-kubectl get pods -A
+sudo kubectl get pods -A
 ```
 
 Sample output:
 
 ```
 NAMESPACE     NAME                                      READY   STATUS      RESTARTS   AGE
-default       emsserver-ems-server-58c4c8df96-4qkk6     0/1     Init:0/1    0          3m30s
-default       netdata-child-55lq2                       1/1     Running     0          3m30s
-default       netdata-child-l4nw5                       1/1     Running     0          3m30s
+default       ems-client-daemonset-8k6bx                1/1     Running     0          29h
+default       ems-client-daemonset-h5b7w                1/1     Running     0          29h
+default       emsserver-ems-server-58c4c8df96-kl2wl     1/1     Running     0          29h
+default       netdata-child-hr4jb                       1/1     Running     0          29h
+default       netdata-child-qr48g                       1/1     Running     0          29h
 ...
 ```
 
@@ -323,6 +399,29 @@ Run the example:
 python examples/subscribe_metric.py
 ```
 
+Sample output:
+
+```
+2026-07-01 12:38:58,128 INFO root: Subscribing to metric: cpu_util_prct
+2026-07-01 12:38:58,130 INFO swchmonclient.listener: Starting listener for [/topic/>] on emsserver-ems-server:61610
+2026-07-01 12:38:58,138 INFO root: Latest buffered value for cpu_util_prct: []
+2026-07-01 12:38:58,144 INFO stomp.py: established connection to host emsserver-ems-server, port 61610
+2026-07-01 12:38:58,192 INFO swchmonclient.listener: Subscription created successfully
+2026-07-01 12:39:03,139 INFO root: Latest buffered value for cpu_util_prct: []
+...
+2026-07-01 12:39:23,144 INFO root: Latest buffered value for cpu_util_prct: [31.086818299999997]
+2026-07-01 12:39:28,144 INFO root: Latest buffered value for cpu_util_prct: []
+...
+2026-07-01 12:39:53,148 INFO root: Latest buffered value for cpu_util_prct: [30.95604507777778]
+^C
+2026-07-01 12:39:55,389 INFO root: Stop requested, shutting down metric subscription...
+2026-07-01 12:39:58,149 INFO root: Unsubscribing from metric cpu_util_prct
+2026-07-01 12:39:58,150 INFO swchmonclient.listener: Shutdown requested. Closing connection...
+2026-07-01 12:39:58,151 WARNING swchmonclient.listener: Disconnected from ActiveMQ
+2026-07-01 12:39:58,151 INFO swchmonclient.listener: Connection cleanup completed
+2026-07-01 12:39:58,152 INFO root: Metric subscription stopped
+```
+
 The example subscribes to `cpu_util_prct`, polls until you stop it with `Ctrl+C`, then unsubscribes cleanly.
 
 Or use the API directly:
@@ -330,13 +429,13 @@ Or use the API directly:
 ```python
 from swchmonclient import subscribe_metric, query_metric_values, unsubscribe_metric
 
-thread_name = subscribe_metric("cpu_util_prct")  # plain names normalize to /topic/<metric>
-print(thread_name)  # "metric-listener"
+subscribe_metric("cpu_util_prct")  # plain names normalize to /topic/<metric>
 
 # Wait some seconds while samples are buffered, then:
 values = query_metric_values("cpu_util_prct")
-print(values)  # e.g. [42.0, 41.7]. Returned samples are consumed from the buffer
-
+# e.g. [42.0, 41.7]. Returned samples are consumed from the buffer
+print(values)
+# Unsubscribe from the metric
 unsubscribe_metric("cpu_util_prct")
 ```
 
@@ -357,6 +456,39 @@ python examples/subscribe_metric_raw.py
 ```
 
 The example subscribes to `cpu_util_prct` on all nodes, polls until you stop it with `Ctrl+C`, then unsubscribes cleanly.
+
+Sample output:
+
+```
+2026-07-01 12:45:15,553 INFO swchmonclient.metrics: Subscribing to raw metric 'cpu_util_prct' using node selector 'all' resolved to nodes ['192.168.0.135', '192.168.0.60']
+2026-07-01 12:45:15,555 INFO swchmonclient.listener: Starting listener for [/topic/>] on 192.168.0.135:61610
+2026-07-01 12:45:15,558 INFO swchmonclient.listener: Starting listener for [/topic/>] on 192.168.0.60:61610
+2026-07-01 12:45:15,559 INFO root: Started raw listener threads: {'192.168.0.135': 'metric-raw-listener:192.168.0.135', '192.168.0.60': 'metric-raw-listener:192.168.0.60'}
+2026-07-01 12:45:15,560 INFO root: Buffered raw values for cpu_util_prct from the last 30 seconds: {'192.168.0.60': [], '192.168.0.135': []}
+2026-07-01 12:45:15,560 INFO stomp.py: established connection to host 192.168.0.135, port 61610
+2026-07-01 12:45:15,561 INFO stomp.py: established connection to host 192.168.0.60, port 61610
+2026-07-01 12:45:15,702 INFO swchmonclient.listener: Subscription created successfully
+2026-07-01 12:45:15,704 INFO swchmonclient.listener: Subscription created successfully
+2026-07-01 12:45:20,561 INFO root: Buffered raw values for cpu_util_prct from the last 30 seconds: {'192.168.0.60': [{'timestamp': 1782909918.99, 'value': 7.017745433333333}], '192.168.0.135': []}
+2026-07-01 12:45:25,562 INFO root: Buffered raw values for cpu_util_prct from the last 30 seconds: {'192.168.0.60': [], '192.168.0.135': [{'timestamp': 1782909921.226, 'value': 30.16090201111111}]}
+2026-07-01 12:45:30,562 INFO root: Buffered raw values for cpu_util_prct from the last 30 seconds: {'192.168.0.60': [], '192.168.0.135': []}
+...
+2026-07-01 12:45:50,565 INFO root: Buffered raw values for cpu_util_prct from the last 30 seconds: {'192.168.0.60': [{'timestamp': 1782909948.99, 'value': 7.103616777777777}], '192.168.0.135': []}
+2026-07-01 12:45:55,566 INFO root: Buffered raw values for cpu_util_prct from the last 30 seconds: {'192.168.0.60': [], '192.168.0.135': [{'timestamp': 1782909951.226, 'value': 30.130682055555553}]}
+2026-07-01 12:46:00,567 INFO root: Buffered raw values for cpu_util_prct from the last 30 seconds: {'192.168.0.60': [], '192.168.0.135': []}
+^C
+2026-07-01 12:46:01,205 INFO root: Stop requested, shutting down raw metric subscription...
+2026-07-01 12:46:05,568 INFO root: Unsubscribing from raw metric cpu_util_prct
+2026-07-01 12:46:05,569 INFO swchmonclient.listener: Shutdown requested. Closing connection...
+2026-07-01 12:46:05,570 WARNING swchmonclient.listener: Disconnected from ActiveMQ
+2026-07-01 12:46:05,571 WARNING swchmonclient.listener: Disconnected from ActiveMQ
+2026-07-01 12:46:05,571 INFO swchmonclient.listener: Connection cleanup completed
+2026-07-01 12:46:05,573 INFO swchmonclient.listener: Shutdown requested. Closing connection...
+2026-07-01 12:46:05,574 WARNING swchmonclient.listener: Disconnected from ActiveMQ
+2026-07-01 12:46:05,574 WARNING swchmonclient.listener: Disconnected from ActiveMQ
+2026-07-01 12:46:05,575 INFO swchmonclient.listener: Connection cleanup completed
+2026-07-01 12:46:05,576 INFO root: Raw metric subscription stopped
+```
 
 Or use the API directly:
 
@@ -400,22 +532,6 @@ Notes:
 
 ### 3.6 Undeploy the monitoring stack
 
-`undeploy_monitoring(...)` removes the monitoring stack and its cleanup resources. Unlike deploy, it does **not** take `sat_file`, `optimusdb_url`, `use_kb`, or `upload_kb`. It deletes `ConfigMap/emsconfig` and `ConfigMap/tosca-model-configmap` by name and undeploys the remaining manifest-defined resources from the static manifest files.
-
-```python
-undeploy_monitoring(
-    namespace: str | None = None,
-    logger: logging.Logger | None = None,
-) -> int
-```
-
-| Parameter | Required | Type | Description |
-| --- | --- | --- | --- |
-| `namespace` | No | `str \| None` | Namespace override for deleting namespaced resources. If omitted, manifest/default namespaces are used. |
-| `logger` | No | `logging.Logger \| None` | Custom logger. If omitted, stdout logging is configured automatically. |
-
-**Output:** a process-style exit code. `0` on success, `1` if one or more undeploy steps fail.
-
 Run it from inside the pod, either from Python:
 
 ```python
@@ -433,28 +549,28 @@ python examples/undeploy.py
 Expected output:
 
 ```
-2026-06-24 13:52:43,277 INFO swchmonclient.undeploy_monitoring: Found local manifest ./manifests/ems+netdata-k3s_parametric.yaml.
-2026-06-24 13:52:43,762 WARNING swchmonclient.undeploy_monitoring: Local manifest ./manifests/ems+netdata-k3s_parametric.yaml differs from release asset https://github.com/Swarmchestrate/monitoring-client/releases/download/v0.1.0/ems+netdata-k3s_parametric.yaml. Keeping local file.
-2026-06-24 13:52:43,817 INFO swchmonclient.undeploy_monitoring: Undeploying ./manifests/ems+netdata-k3s_parametric.yaml ...
-2026-06-24 13:52:44,249 INFO swchmonclient.undeploy_monitoring:   Done. 14 resource(s) deleted.
-2026-06-24 13:52:44,249 INFO swchmonclient.undeploy_monitoring: Undeploying ConfigMap/emsconfig ...
-2026-06-24 13:52:44,270 INFO swchmonclient.undeploy_monitoring:   Done. 1 configmap resource(s) deleted.
-2026-06-24 13:52:44,270 INFO swchmonclient.undeploy_monitoring: Undeploying DaemonSet/ems-client-daemonset ...
-2026-06-24 13:52:44,289 INFO swchmonclient.undeploy_monitoring:   Done. 0 daemonset resource(s) deleted.
-2026-06-24 13:52:44,289 INFO swchmonclient.undeploy_monitoring: Undeploying ConfigMap/ems-client-configmap ...
-2026-06-24 13:52:44,300 INFO swchmonclient.undeploy_monitoring:   Done. 0 configmap resource(s) deleted.
-2026-06-24 13:52:44,301 INFO swchmonclient.undeploy_monitoring: Undeploying ConfigMap/monitoring-configmap ...
-2026-06-24 13:52:44,310 INFO swchmonclient.undeploy_monitoring:   Done. 0 configmap resource(s) deleted.
-2026-06-24 13:52:44,311 INFO swchmonclient.undeploy_monitoring: All manifests undeployed successfully.
+2026-07-01 12:48:40,110 INFO swchmonclient.undeploy_monitoring: Found local manifest ./manifests/ems+netdata-k3s_parametric.yaml.
+2026-07-01 12:48:40,472 WARNING swchmonclient.undeploy_monitoring: Local manifest ./manifests/ems+netdata-k3s_parametric.yaml differs from release asset https://github.com/Swarmchestrate/monitoring-client/releases/download/v0.1.0/ems+netdata-k3s_parametric.yaml. Keeping local file.
+2026-07-01 12:48:40,536 INFO swchmonclient.undeploy_monitoring: Undeploying ./manifests/ems+netdata-k3s_parametric.yaml ...
+2026-07-01 12:48:40,801 INFO swchmonclient.undeploy_monitoring:   Done. 14 resource(s) deleted.
+2026-07-01 12:48:40,802 INFO swchmonclient.undeploy_monitoring: Undeploying ConfigMap/emsconfig ...
+2026-07-01 12:48:40,809 INFO swchmonclient.undeploy_monitoring:   Done. 1 configmap resource(s) deleted.
+2026-07-01 12:48:40,809 INFO swchmonclient.undeploy_monitoring: Undeploying ConfigMap/tosca-model-configmap ...
+2026-07-01 12:48:40,818 INFO swchmonclient.undeploy_monitoring:   Done. 1 configmap resource(s) deleted.
+2026-07-01 12:48:40,819 INFO swchmonclient.undeploy_monitoring: Undeploying DaemonSet/ems-client-daemonset ...
+2026-07-01 12:48:40,854 INFO swchmonclient.undeploy_monitoring:   Done. 1 daemonset resource(s) deleted.
+2026-07-01 12:48:40,854 INFO swchmonclient.undeploy_monitoring: Undeploying ConfigMap/ems-client-configmap ...
+2026-07-01 12:48:40,869 INFO swchmonclient.undeploy_monitoring:   Done. 1 configmap resource(s) deleted.
+2026-07-01 12:48:40,871 INFO swchmonclient.undeploy_monitoring: Undeploying ConfigMap/monitoring-configmap ...
+2026-07-01 12:48:40,880 INFO swchmonclient.undeploy_monitoring:   Done. 1 configmap resource(s) deleted.
+2026-07-01 12:48:40,881 INFO swchmonclient.undeploy_monitoring: All manifests undeployed successfully.
 Monitoring undeployed successfully.
 ```
-
-> The `0 resource(s) deleted` lines for the EMS-client resources are expected. Those resources are created lazily by the EMS server, so they may not exist at undeploy time.
 
 Delete the test pod (from the master):
 
 ```bash
-kubectl delete pod -n <NAMESPACE> python-shell
+sudo kubectl delete pod -n <NAMESPACE> python-shell
 ```
 
 ## Appendix: Namespace-parametric RBAC
@@ -464,9 +580,9 @@ Use this version if you want to install the `mon-client` service account and RBA
 ```bash
 NAMESPACE=${NAMESPACE:-default}
 
-kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+sudo kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | sudo kubectl apply -f -
 
-cat <<EOF | kubectl apply -f -
+cat <<EOF | sudo kubectl apply -f -
 apiVersion: v1
 kind: ServiceAccount
 metadata:
