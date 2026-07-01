@@ -1,5 +1,7 @@
+import base64
 import os
 from collections.abc import Iterable, Sequence
+from datetime import UTC, datetime
 from logging import Logger
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -7,6 +9,7 @@ from typing import Any
 from urllib.error import URLError
 from urllib.request import urlopen
 
+import requests
 import yaml
 from kubernetes import config, dynamic
 from kubernetes.client import ApiClient, CoreV1Api
@@ -16,15 +19,19 @@ from .exceptions import DeploymentError
 
 
 MONITORING_TEMPLATE_MANIFEST = "./manifests/emsconfig.yaml"
+TOSCA_MODEL_CONFIGMAP_NAME = "tosca-model-configmap"
+TOSCA_MODEL_CONFIGMAP_KEY = "test-tosca-model.yaml"
+DEFAULT_OPTIMUSDB_URL = "http://optimusdb.swarmchestrate.sztaki.hu/optimusdb1/swarmkb"
 MONITORING_DEPLOY_MANIFESTS = (
     MONITORING_TEMPLATE_MANIFEST,
     "./manifests/ems+netdata-k3s_parametric.yaml",
 )
 MONITORING_UNDEPLOY_MANIFESTS = (
-    MONITORING_TEMPLATE_MANIFEST,
     "./manifests/ems+netdata-k3s_parametric.yaml",
 )
 MONITORING_EXTRA_RESOURCES_TO_DELETE = (
+    ("v1", "ConfigMap", "emsconfig", "configmap"),
+    ("v1", "ConfigMap", TOSCA_MODEL_CONFIGMAP_NAME, "configmap"),
     ("apps/v1", "DaemonSet", "ems-client-daemonset", "daemonset"),
     ("v1", "ConfigMap", "ems-client-configmap", "configmap"),
     ("v1", "ConfigMap", "monitoring-configmap", "configmap"),
@@ -371,20 +378,138 @@ def _ensure_monitoring_manifest(manifest_path: str, logger: Logger) -> None:
         if local_content == release_content:
             logger.info("Local manifest %s matches release asset.", manifest_path)
         else:
-            logger.warning("Local manifest %s differs from release asset %s.", manifest_path, release_url)
-            _write_manifest_file(manifest_path, release_content)
-            logger.info("Downloaded updated manifest to %s.", manifest_path)
+            logger.warning(
+                "Local manifest %s differs from release asset %s. Keeping local file.",
+                manifest_path,
+                release_url,
+            )
         return
 
-    logger.info("Local manifest %s not found. Downloading from %s ...", manifest_path, release_url)
+    logger.info("Fetching manifest %s from release asset %s.", manifest_path, release_url)
     release_content = _fetch_manifest_release_bytes(release_url)
     _write_manifest_file(manifest_path, release_content)
-    logger.info("Downloaded manifest to %s.", manifest_path)
+    logger.info("Wrote manifest to %s.", manifest_path)
 
 
-def _ensure_monitoring_manifests(logger: Logger) -> None:
-    for manifest_path in MONITORING_MANIFEST_RELEASE_URLS:
+def _ensure_monitoring_manifests(manifest_paths: Sequence[str], logger: Logger) -> None:
+    for manifest_path in manifest_paths:
         _ensure_monitoring_manifest(manifest_path, logger)
+
+
+def _load_sat_file(sat_file: str) -> tuple[str, str]:
+    sat_path = Path(sat_file)
+    sat_filename = sat_path.name
+    if not sat_filename:
+        raise DeploymentError(f"Unable to determine SAT filename from {sat_file}")
+
+    try:
+        sat_content = sat_path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise DeploymentError(f"Unable to read SAT file {sat_file}: {error}") from error
+
+    return sat_filename, sat_content
+
+
+def _build_unique_sat_filename(sat_filename: str) -> str:
+    sat_path = Path(sat_filename)
+    if not sat_path.name:
+        raise DeploymentError(f"Unable to determine SAT filename from {sat_filename}")
+
+    timestamp = datetime.now(UTC).strftime("%Y%m%d%H%M%S%f")
+    if sat_path.suffix:
+        return f"{sat_path.stem}-{timestamp}{sat_path.suffix}"
+    return f"{sat_path.name}-{timestamp}"
+
+
+def _upload_sat_to_kb(
+    sat_file: str,
+    sat_filename: str,
+    sat_content: str,
+    logger: Logger,
+) -> None:
+    base = os.environ.get("KB_BASE_URL", "http://optimusdb.swarmchestrate.sztaki.hu").rstrip("/")
+    context = os.environ.get("KB_CONTEXT", "swarmkb").strip("/")
+
+    try:
+        timeout = int(os.environ.get("KB_TIMEOUT", "10"))
+    except ValueError as error:
+        raise DeploymentError("KB_TIMEOUT must be an integer") from error
+
+    upload_url = f"{base}/optimusdb1/{context}/upload"
+    payload = {
+        "file": base64.b64encode(sat_content.encode("utf-8")).decode("utf-8"),
+        "filename": sat_filename,
+        "store_full_structure": True,
+        "target_store": "dsswres",
+    }
+
+    logger.info("Uploading SAT file %s to the knowledge base as %s ...", sat_file, sat_filename)
+    try:
+        response = requests.post(upload_url, json=payload, timeout=timeout)
+        response.raise_for_status()
+    except requests.RequestException as error:
+        raise DeploymentError(f"Failed to upload SAT file {sat_file} to the knowledge base: {error}") from error
+    logger.info("Uploaded SAT file %s to the knowledge base.", sat_filename)
+
+
+def _render_tosca_model_configmap_manifest(sat_content: str) -> str:
+
+    manifest = {
+        "apiVersion": "v1",
+        "kind": "ConfigMap",
+        "metadata": {
+            "name": TOSCA_MODEL_CONFIGMAP_NAME,
+            "namespace": DEFAULT_MONITORING_NAMESPACE,
+        },
+        "data": {
+            TOSCA_MODEL_CONFIGMAP_KEY: sat_content,
+        },
+    }
+
+    with NamedTemporaryFile(mode="w", suffix=".yaml", delete=False, encoding="utf-8") as temp_file:
+        yaml.safe_dump(manifest, temp_file, sort_keys=False)
+        return temp_file.name
+
+
+def _deploy_tosca_model_configmap(
+    sat_file: str,
+    sat_content: str,
+    logger: Logger,
+) -> int:
+    deployer = K8sDeployer()
+    rendered_manifest_path: str | None = None
+
+    try:
+        rendered_manifest_path = _render_tosca_model_configmap_manifest(sat_content)
+        logger.info(
+            "Deploying ConfigMap/%s from SAT file %s ...",
+            TOSCA_MODEL_CONFIGMAP_NAME,
+            sat_file,
+        )
+        deployed = deployer.deploy_manifest(rendered_manifest_path)
+    except DeploymentError as error:
+        logger.error("  ERROR: %s", error)
+        return 1
+    finally:
+        if rendered_manifest_path and os.path.exists(rendered_manifest_path):
+            os.unlink(rendered_manifest_path)
+
+    if not deployed:
+        logger.info("No valid Kubernetes resources found in the SAT ConfigMap manifest.")
+        return 0
+
+    logger.info("  Created or patched resources:")
+    for resource in deployed:
+        namespace = resource.get("namespace") or "<cluster-scoped>"
+        logger.info(
+            "  - %s/%s (apiVersion=%s, namespace=%s)",
+            resource["kind"],
+            resource["name"],
+            resource["apiVersion"],
+            namespace,
+        )
+
+    return 0
 
 
 def _deploy_manifests_with_optional_render(
@@ -527,7 +652,9 @@ def _undeploy_manifests_with_optional_render(
 
 def deploy_monitoring(
     sat_file: str,
-    optimusdb_url: str,
+    optimusdb_url: str = DEFAULT_OPTIMUSDB_URL,
+    use_kb: bool = True,
+    upload_kb: bool = False,
     logger: Logger | None = None,
 ) -> int:
     """Deploy the standard monitoring stack manifests."""
@@ -535,17 +662,35 @@ def deploy_monitoring(
 
     active_logger = logger or configure_stdout_logger("swchmonclient.deploy_monitoring")
     try:
-        _ensure_monitoring_manifests(active_logger)
+        _ensure_monitoring_manifests(MONITORING_DEPLOY_MANIFESTS, active_logger)
+        sat_filename, sat_content = _load_sat_file(sat_file)
+        deployed_sat_filename = _build_unique_sat_filename(sat_filename)
     except DeploymentError as error:
         active_logger.error("  ERROR: %s", error)
+        active_logger.info("One or more manifests failed to deploy.")
+        return 1
+    if upload_kb and not use_kb:
+        active_logger.warning(
+            "upload_kb=True is ignored because use_kb=False; skipping knowledge base upload."
+        )
+    elif upload_kb:
+        try:
+            _upload_sat_to_kb(sat_file, deployed_sat_filename, sat_content, active_logger)
+        except DeploymentError as error:
+            active_logger.error("  ERROR: %s", error)
+            active_logger.info("One or more manifests failed to deploy.")
+            return 1
+    if _deploy_tosca_model_configmap(sat_file, sat_content, active_logger) != 0:
         active_logger.info("One or more manifests failed to deploy.")
         return 1
     return _deploy_manifests_with_optional_render(
         manifests=MONITORING_DEPLOY_MANIFESTS,
         template_manifest_path=MONITORING_TEMPLATE_MANIFEST,
         template_variables={
-            "sat_file": sat_file,
+            "sat_file": deployed_sat_filename,
             "optimusdb_url": optimusdb_url,
+            "use_kb": use_kb,
+            "upload_kb": upload_kb,
         },
         logger=active_logger,
         logger_name="swchmonclient.deploy_monitoring",
@@ -553,8 +698,6 @@ def deploy_monitoring(
 
 
 def undeploy_monitoring(
-    sat_file: str,
-    optimusdb_url: str,
     namespace: str | None = None,
     logger: Logger | None = None,
 ) -> int:
@@ -563,7 +706,7 @@ def undeploy_monitoring(
 
     active_logger = logger or configure_stdout_logger("swchmonclient.undeploy_monitoring")
     try:
-        _ensure_monitoring_manifests(active_logger)
+        _ensure_monitoring_manifests(MONITORING_UNDEPLOY_MANIFESTS, active_logger)
     except DeploymentError as error:
         active_logger.error("  ERROR: %s", error)
         active_logger.info("One or more manifests failed to undeploy.")
@@ -571,11 +714,6 @@ def undeploy_monitoring(
     return _undeploy_manifests_with_optional_render(
         manifests=MONITORING_UNDEPLOY_MANIFESTS,
         namespace=namespace,
-        template_manifest_path=MONITORING_TEMPLATE_MANIFEST,
-        template_variables={
-            "sat_file": sat_file,
-            "optimusdb_url": optimusdb_url,
-        },
         extra_resources_to_delete=MONITORING_EXTRA_RESOURCES_TO_DELETE,
         logger=active_logger,
         logger_name="swchmonclient.undeploy_monitoring",

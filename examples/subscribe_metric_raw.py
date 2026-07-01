@@ -7,8 +7,7 @@ from swchmonclient import (
     unsubscribe_metric,
 )
 
-METRIC_NAME = "cpu_util_instance"
-METRIC_NAME2 = "mean_cpu_util_prct"
+METRIC_NAME = "cpu_util_prct"
 NODES = ["100.104.109.71", "100.118.84.34"]
 RUN_SECONDS = 180
 QUERY_WINDOW_SECONDS = 30
@@ -32,11 +31,20 @@ def main() -> int:
     signal.signal(signal.SIGINT, request_stop)
     signal.signal(signal.SIGTERM, request_stop)
 
-    # Subscribe to the raw metric for the specified nodes (or "local" or "all")
-    # logging.info("Subscribing to raw metric %s for nodes %s", METRIC_NAME, NODES)
+    # Option 1: Subscribe to the raw metric for specific nodes.
+    # Use this when you want metric data only from the nodes listed in the NODES variable.
     # thread_names = subscribe_metric_raw(METRIC_NAME, NODES)
+
+    # Option 2: Subscribe to the raw metric for the local node only.
+    # Use this when you want metric data only from the node running this code.
     # thread_names = subscribe_metric_raw(METRIC_NAME, "local")
+
+    # Option 3: Subscribe to the raw metric for all nodes.
+    # Use this when you want metric data from every available node.
+    # thread_names = subscribe_metric_raw(METRIC_NAME, "all")
+
     thread_names = subscribe_metric_raw(METRIC_NAME, "all")
+
     logging.info("Started raw listener threads: %s", thread_names)
 
     started_at = time.time()

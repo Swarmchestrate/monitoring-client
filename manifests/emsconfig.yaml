@@ -2,6 +2,7 @@ apiVersion: v1
 data:
   SAT_FILE: {{ sat_file }}
   OPTIMUSDB_URL: {{ optimusdb_url }}
+  USE_KB: "{{ 'true' if use_kb else 'false' }}"
 kind: ConfigMap
 metadata:
   name: emsconfig

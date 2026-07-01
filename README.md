@@ -25,38 +25,17 @@ uv add swchmonclient
 > **Important:** `deploy_monitoring(...)` and `undeploy_monitoring(...)` use in-cluster Kubernetes configuration. Run them from a pod that has a mounted service account token and RBAC permission to create, patch, get, list, and delete the Kubernetes resources referenced by the monitoring manifests.
 
 
-## Quick Example
+## Getting started
 
-```python
-from swchmonclient import (
-    deploy_monitoring,
-    query_metric_values,
-    query_metric_values_raw,
-    subscribe_metric,
-    subscribe_metric_raw,
-    undeploy_monitoring,
-    unsubscribe_metric,
-)
+See the [Step-by-step guide](#step-by-step-guide) for the full deployment and subscription flow.
 
-deploy_exit_code = deploy_monitoring(
-    "tosca_metrics_ze.yaml",
-    "http://optimusdb.example/swarmkb",
-)
+For runnable scripts, see [Examples](#examples). For the individual function signatures, see [Simple Snippets](#simple-snippets) and the [API Reference](#api-reference).
 
-thread_name = subscribe_metric("cpu_util_instance")
-recent_values = query_metric_values("cpu_util_instance")
+## Available Metrics
 
-raw_threads = subscribe_metric_raw("cpu_util_instance", ["10.0.0.1", "10.0.0.2"])
-raw_values = query_metric_values_raw("cpu_util_instance", seconds=60)
-
-unsubscribe_metric("cpu_util_instance")
-
-undeploy_exit_code = undeploy_monitoring(
-    "tosca_metrics_ze.yaml",
-    "http://optimusdb.example/swarmkb",
-    namespace="default",
-)
-```
+| Metric name | Description |
+| --- | --- |
+| `cpu_util_prct` | CPU utilization percentage. |
 
 ## Raw Metric Subscriptions
 
@@ -171,30 +150,30 @@ If you subscribe multiple raw metrics for the same node/IP, the library reuses t
 
 ## API Reference
 
-### `deploy_monitoring(sat_file: str, optimusdb_url: str, logger: logging.Logger | None = None) -> int`
+### `deploy_monitoring(sat_file: str, optimusdb_url: str = "http://optimusdb.swarmchestrate.sztaki.hu/optimusdb1/swarmkb", use_kb: bool = True, upload_kb: bool = False, logger: logging.Logger | None = None) -> int`
 
 Deploys the standard monitoring stack manifests.
 
-This helper uses in-cluster Kubernetes config loaded from the pod's service account. It does not read a local kubeconfig. The service account used by the pod must have RBAC permission to create or patch the Kubernetes resources defined by the monitoring manifests. If `./manifests/emsconfig.yaml` or `./manifests/ems+netdata-k3s_parametric.yaml` is missing locally, the library downloads it from the `v0.1.0` release assets before deployment. When a local copy already exists, it validates the content against the release asset, logs whether it matches, and replaces the file if it differs.
+This helper uses in-cluster Kubernetes config loaded from the pod's service account. It does not read a local kubeconfig. The service account used by the pod must have RBAC permission to create or patch the Kubernetes resources defined by the monitoring manifests. The `sat_file`, `optimusdb_url`, `use_kb`, and `upload_kb` values are part of the deployment flow. The `sat_file` input is a local file path. During deployment, the SAT file is read locally, its basename is converted into a unique filename by appending a UTC timestamp, and that generated filename is injected into the rendered manifest as `SAT_FILE`. The SAT file content is also deployed as `ConfigMap/tosca-model-configmap` under the fixed key `test-tosca-model.yaml`, which is the filename expected by the application. `optimusdb_url` is optional and defaults to the Swarmchestrate OptimusDB endpoint. By default, `use_kb=True`, so EMS is configured to resolve the SAT through the knowledge base exposed by the configured `optimusdb_url`. Set `use_kb=False` to keep knowledge-base mode disabled in the rendered manifest and use the SAT content from that ConfigMap instead. When `upload_kb=True`, the SAT file is also uploaded to the knowledge base under that generated unique filename before the Kubernetes resources are deployed. If `./manifests/emsconfig.yaml` or `./manifests/ems+netdata-k3s_parametric.yaml` is missing locally, the library downloads it from the release assets before deployment. When a local copy already exists, it validates the content against the release asset, logs whether it matches, and keeps the local file if it differs.
 
 | Parameter | Required | Type | Description |
 | --- | --- | --- | --- |
-| `sat_file` | Yes | `str` | SAT file path injected into the templated manifest. |
-| `optimusdb_url` | Yes | `str` | OptimusDB URL injected into the templated manifest. |
+| `sat_file` | Yes | `str` | Local SAT file path. Its basename is converted to a unique timestamped filename for `SAT_FILE`, and its content is loaded into `ConfigMap/tosca-model-configmap` as `test-tosca-model.yaml`. |
+| `optimusdb_url` | No | `str` | OptimusDB URL injected into the templated manifest. Defaults to the Swarmchestrate OptimusDB endpoint. |
+| `use_kb` | No | `bool` | Controls the rendered `USE_KB` value in `emsconfig.yaml`. Defaults to `True`. Set to `False` to disable knowledge base mode. |
+| `upload_kb` | No | `bool` | If `True`, uploads the SAT file to the knowledge base before deployment. Defaults to `False`. |
 | `logger` | No | `logging.Logger \| None` | Custom logger. If omitted, stdout logging is configured automatically. |
 
 **Output:** process-style exit code: `0` on success, `1` if one or more deploy steps fail.
 
-### `undeploy_monitoring(sat_file: str, optimusdb_url: str, namespace: str | None = None, logger: logging.Logger | None = None) -> int`
+### `undeploy_monitoring(namespace: str | None = None, logger: logging.Logger | None = None) -> int`
 
-Undeploys the standard monitoring stack manifests and the related cleanup resources.
+Undeploys the monitoring stack manifests and the related cleanup resources.
 
-Like deployment, undeploy uses in-cluster Kubernetes config loaded from the pod's service account and does not read a local kubeconfig. That service account must have RBAC permission to delete the Kubernetes resources defined by the manifests and the additional cleanup resources. Undeploy also ensures the two required monitoring manifests are available locally, logs whether existing local copies match the published release assets, and refreshes differing files from the release.
+Like deployment, undeploy uses in-cluster Kubernetes config loaded from the pod's service account and does not read a local kubeconfig. That service account must have RBAC permission to delete the Kubernetes resources defined by the manifests and the additional cleanup resources. Unlike deployment, undeploy does not render `emsconfig.yaml` and does not require the original `sat_file`, `optimusdb_url`, or `use_kb` values. It deletes `ConfigMap/emsconfig` and `ConfigMap/tosca-model-configmap` directly by name and undeploys the remaining manifest-defined resources from the static manifest files.
 
 | Parameter | Required | Type | Description |
 | --- | --- | --- | --- |
-| `sat_file` | Yes | `str` | SAT file path used to render the templated manifest before undeploy. |
-| `optimusdb_url` | Yes | `str` | OptimusDB URL used to render the templated manifest before undeploy. |
 | `namespace` | No | `str \| None` | Namespace override for deleting namespaced resources. If omitted, manifest/default namespaces are used. |
 | `logger` | No | `logging.Logger \| None` | Custom logger. If omitted, stdout logging is configured automatically. |
 
@@ -202,7 +181,7 @@ Like deployment, undeploy uses in-cluster Kubernetes config loaded from the pod'
 
 ### `subscribe_metric(metric: str) -> str`
 
-Starts or reuses the shared standard metric listener for the requested metric topic.
+Starts or reuses the shared metric listener for the requested metric topic.
 
 | Parameter | Required | Type | Description |
 | --- | --- | --- | --- |
@@ -285,8 +264,8 @@ Runnable examples are available under `examples/`:
 
 - `examples/deploy.py`
 - `examples/undeploy.py`
-- `examples/subscribe_cpu_util_instance.py`
-- `examples/subscribe_cpu_util_instance_raw.py`
+- `examples/subscribe_metric.py`
+- `examples/subscribe_metric_raw.py`
 
 ## Simple Snippets
 
@@ -295,7 +274,11 @@ Runnable examples are available under `examples/`:
 ```python
 from swchmonclient import deploy_monitoring
 
-exit_code = deploy_monitoring("tosca_metrics_ze.yaml", "http://optimusdb.example/swarmkb")
+exit_code = deploy_monitoring(
+    "./manifests/stressng.yaml",
+    use_kb=True,
+    upload_kb=False,
+)
 ```
 
 ### `undeploy_monitoring`
@@ -304,8 +287,6 @@ exit_code = deploy_monitoring("tosca_metrics_ze.yaml", "http://optimusdb.example
 from swchmonclient import undeploy_monitoring
 
 exit_code = undeploy_monitoring(
-    "tosca_metrics_ze.yaml",
-    "http://optimusdb.example/swarmkb",
     namespace="default",
 )
 ```
@@ -324,10 +305,21 @@ print(thread_name)
 ```python
 from swchmonclient import subscribe_metric_raw
 
-threads = subscribe_metric_raw("cpu_util_instance", "local")
-# or: subscribe_metric_raw("cpu_util_instance", "local", cache_size=500)
-# or: subscribe_metric_raw("cpu_util_instance", "all")  # IMPORTANT: requires Kubernetes config
-# or: subscribe_metric_raw("cpu_util_instance", ["10.0.0.1", "10.0.0.2"])
+METRIC_NAME = "cpu_util_prct"
+NODES = ["10.0.0.1", "10.0.0.2"]
+
+# Option 1: Subscribe to the raw metric for specific nodes.
+# Use this when you want metric data only from the nodes listed in the NODES variable.
+# threads = subscribe_metric_raw(METRIC_NAME, NODES)
+
+# Option 2: Subscribe to the raw metric for the local node only.
+# Use this when you want metric data only from the node running this code.
+# threads = subscribe_metric_raw(METRIC_NAME, "local")
+
+# Option 3: Subscribe to the raw metric for all nodes.
+# Use this when you want metric data from every available node.
+threads = subscribe_metric_raw(METRIC_NAME, "all")
+
 print(threads)
 ```
 
@@ -354,39 +346,4 @@ from swchmonclient import unsubscribe_metric
 
 unsubscribe_metric("cpu_util_instance")
 # or: unsubscribe_metric("cpu_util_instance", nodes=["10.0.0.1"])
-```
-
-
-## Development
-
-```bash
-uv sync
-uv build
-```
-
-### Switching between in-cluster and local development
-
-The STOMP listener reads `MON_CLIENT_STOMP_HOST` and `MON_CLIENT_STOMP_PORT` from `.env`, so you can switch environments without changing code.
-
-Use the bundled profiles:
-
-```bash
-./scripts/use-cluster-env.sh
-./scripts/use-dev-env.sh
-```
-
-- `use-cluster-env.sh` writes `.env` with `MON_CLIENT_STOMP_HOST=emsserver-ems-server` and `MON_CLIENT_STOMP_PORT=61610`
-- `use-dev-env.sh` writes `.env` with `MON_CLIENT_STOMP_HOST=127.0.0.1` and `MON_CLIENT_STOMP_PORT=61610`
-
-When running outside the cluster, start a port-forward to the ClusterIP service:
-
-```bash
-./scripts/use-dev-env.sh
-./scripts/port-forward-emsserver.sh
-```
-
-If the service is not in `default`, pass the namespace explicitly:
-
-```bash
-./scripts/port-forward-emsserver.sh monitoring
 ```

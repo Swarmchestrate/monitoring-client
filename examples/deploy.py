@@ -1,14 +1,19 @@
+from pathlib import Path
+
 from swchmonclient import deploy_monitoring
 
 # Set to the path of your SAT file
-EMS_SAT_FILE = "tosca_metrics_ze.yaml"
-# Set to the URL of your EMS OptimusDB instance
-EMS_OPTIMUSDB_URL = "http://193.225.250.240/optimusdb1/swarmkb"
+SAT_FILE = str(Path(__file__).resolve().parents[1] / "manifests" / "stressng.yaml")
+# Set to False to disable knowledge base mode in the rendered EMS config
+USE_KB = True
+# Set to True to upload the SAT file into the KB before deployment
+UPLOAD_KB = True
 
 def main() -> int:
     exit_code = deploy_monitoring(
-        sat_file=EMS_SAT_FILE,
-        optimusdb_url=EMS_OPTIMUSDB_URL,
+        sat_file=SAT_FILE,
+        use_kb=USE_KB,
+        upload_kb=UPLOAD_KB,
     )
 
     if exit_code == 0:

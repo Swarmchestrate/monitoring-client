@@ -1,0 +1,87 @@
+tosca_definitions_version: tosca_2_0
+
+description: stress-ng workload as a Swarmchestrate SAT
+
+metadata:
+  name: stressng
+  author: you
+  date: "2026-05-05"
+  version: 1.0
+  tags:
+  - stressng
+
+imports:
+- namespace: swch
+  url: https://raw.githubusercontent.com/Swarmchestrate/tosca/refs/heads/main/profiles/eu.swarmchestrate/profile.yaml
+
+service_template:
+  node_templates:
+    swarm:
+      type: swch:Swarm
+      directives:
+      - substitute
+    stressng:
+      type: swch:Microservice
+      properties:
+        image: docker.io/gunjank05/stress-ng
+        replicas: 1
+        labels:
+          app: stressng
+          service: stressng
+        command:
+        - stress-ng
+        args:
+        - --cpu
+        - "1"
+        - --vm
+        - "1"
+        - --vm-bytes
+        - "256M"
+        - --timeout
+        - "3600s"
+        - --metrics-brief
+        ports: []
+      capabilities:
+        metrics:
+          properties:
+            raw:
+            - name: cpu_util_instance
+              sensor: "netdata"
+              config:
+                scope_contexts: system.cpu
+                results-aggregation: SUM
+              collection_frequency: "30 sec"
+              collection_output: "all"
+
+            composite:
+            - name: cpu_util_prct
+              formula: mean(cpu_util_instance)
+              collection_frequency: "30 sec"
+              collection_output: "all"
+              window_type: "sliding"
+              window_size: "5 min"
+              grouping: "per_zone"
+
+        slo-constraints:
+          properties:
+            name: cpu_utilization
+            metric: cpu_util_prct
+            operator: ">"
+            threshold: 80.0
+
+      requirements:
+      - host:
+          count: 1
+          node_filter:
+            $and:
+            - $greater_or_equal:
+              - $get_property: [SELF, TARGET, CAPABILITY, host, num-cpus]
+              - 1
+            - $greater_or_equal:
+              - $get_property: [SELF, TARGET, CAPABILITY, host, mem-size]
+              - 2
+
+  policies:
+  - stressng_colocation:
+      type: swch:Scheduling.Colocation
+      targets: []
