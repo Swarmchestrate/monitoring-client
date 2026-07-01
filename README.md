@@ -347,38 +347,3 @@ from swchmonclient import unsubscribe_metric
 unsubscribe_metric("cpu_util_instance")
 # or: unsubscribe_metric("cpu_util_instance", nodes=["10.0.0.1"])
 ```
-
-
-## Development
-
-```bash
-uv sync
-uv build
-```
-
-### Switching between in-cluster and local development
-
-The STOMP listener reads `MON_CLIENT_STOMP_HOST` and `MON_CLIENT_STOMP_PORT` from `.env`, so you can switch environments without changing code.
-
-Use the bundled profiles:
-
-```bash
-./scripts/use-cluster-env.sh
-./scripts/use-dev-env.sh
-```
-
-- `use-cluster-env.sh` writes `.env` with `MON_CLIENT_STOMP_HOST=emsserver-ems-server` and `MON_CLIENT_STOMP_PORT=61610`
-- `use-dev-env.sh` writes `.env` with `MON_CLIENT_STOMP_HOST=127.0.0.1` and `MON_CLIENT_STOMP_PORT=61610`
-
-When running outside the cluster, start a port-forward to the ClusterIP service:
-
-```bash
-./scripts/use-dev-env.sh
-./scripts/port-forward-emsserver.sh
-```
-
-If the service is not in `default`, pass the namespace explicitly:
-
-```bash
-./scripts/port-forward-emsserver.sh monitoring
-```
