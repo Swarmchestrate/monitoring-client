@@ -21,6 +21,7 @@ from .exceptions import DeploymentError
 MONITORING_TEMPLATE_MANIFEST = "./manifests/emsconfig.yaml"
 TOSCA_MODEL_CONFIGMAP_NAME = "tosca-model-configmap"
 TOSCA_MODEL_CONFIGMAP_KEY = "test-tosca-model.yaml"
+DEFAULT_OPTIMUSDB_URL = "http://optimusdb.swarmchestrate.sztaki.hu/optimusdb1/swarmkb"
 MONITORING_DEPLOY_MANIFESTS = (
     MONITORING_TEMPLATE_MANIFEST,
     "./manifests/ems+netdata-k3s_parametric.yaml",
@@ -651,7 +652,7 @@ def _undeploy_manifests_with_optional_render(
 
 def deploy_monitoring(
     sat_file: str,
-    optimusdb_url: str,
+    optimusdb_url: str = DEFAULT_OPTIMUSDB_URL,
     use_kb: bool = True,
     upload_kb: bool = False,
     logger: Logger | None = None,

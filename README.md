@@ -150,16 +150,16 @@ If you subscribe multiple raw metrics for the same node/IP, the library reuses t
 
 ## API Reference
 
-### `deploy_monitoring(sat_file: str, optimusdb_url: str, use_kb: bool = True, upload_kb: bool = False, logger: logging.Logger | None = None) -> int`
+### `deploy_monitoring(sat_file: str, optimusdb_url: str = "http://optimusdb.swarmchestrate.sztaki.hu/optimusdb1/swarmkb", use_kb: bool = True, upload_kb: bool = False, logger: logging.Logger | None = None) -> int`
 
 Deploys the standard monitoring stack manifests.
 
-This helper uses in-cluster Kubernetes config loaded from the pod's service account. It does not read a local kubeconfig. The service account used by the pod must have RBAC permission to create or patch the Kubernetes resources defined by the monitoring manifests. The `sat_file`, `optimusdb_url`, `use_kb`, and `upload_kb` values are part of the deployment flow. The `sat_file` input is a local file path. During deployment, the SAT file is read locally, its basename is converted into a unique filename by appending a UTC timestamp, and that generated filename is injected into the rendered manifest as `SAT_FILE`. The SAT file content is also deployed as `ConfigMap/tosca-model-configmap` under the fixed key `test-tosca-model.yaml`, which is the filename expected by the application. By default, `use_kb=True`, so EMS is configured to resolve the SAT through the knowledge base exposed by the provided `optimusdb_url`. Set `use_kb=False` to keep knowledge-base mode disabled in the rendered manifest and use the SAT content from that ConfigMap instead. When `upload_kb=True`, the SAT file is also uploaded to the knowledge base under that generated unique filename before the Kubernetes resources are deployed. If `./manifests/emsconfig.yaml` or `./manifests/ems+netdata-k3s_parametric.yaml` is missing locally, the library downloads it from the release assets before deployment. When a local copy already exists, it validates the content against the release asset, logs whether it matches, and keeps the local file if it differs.
+This helper uses in-cluster Kubernetes config loaded from the pod's service account. It does not read a local kubeconfig. The service account used by the pod must have RBAC permission to create or patch the Kubernetes resources defined by the monitoring manifests. The `sat_file`, `optimusdb_url`, `use_kb`, and `upload_kb` values are part of the deployment flow. The `sat_file` input is a local file path. During deployment, the SAT file is read locally, its basename is converted into a unique filename by appending a UTC timestamp, and that generated filename is injected into the rendered manifest as `SAT_FILE`. The SAT file content is also deployed as `ConfigMap/tosca-model-configmap` under the fixed key `test-tosca-model.yaml`, which is the filename expected by the application. `optimusdb_url` is optional and defaults to the Swarmchestrate OptimusDB endpoint. By default, `use_kb=True`, so EMS is configured to resolve the SAT through the knowledge base exposed by the configured `optimusdb_url`. Set `use_kb=False` to keep knowledge-base mode disabled in the rendered manifest and use the SAT content from that ConfigMap instead. When `upload_kb=True`, the SAT file is also uploaded to the knowledge base under that generated unique filename before the Kubernetes resources are deployed. If `./manifests/emsconfig.yaml` or `./manifests/ems+netdata-k3s_parametric.yaml` is missing locally, the library downloads it from the release assets before deployment. When a local copy already exists, it validates the content against the release asset, logs whether it matches, and keeps the local file if it differs.
 
 | Parameter | Required | Type | Description |
 | --- | --- | --- | --- |
 | `sat_file` | Yes | `str` | Local SAT file path. Its basename is converted to a unique timestamped filename for `SAT_FILE`, and its content is loaded into `ConfigMap/tosca-model-configmap` as `test-tosca-model.yaml`. |
-| `optimusdb_url` | Yes | `str` | OptimusDB URL injected into the templated manifest. Used by default because `use_kb` defaults to `True`. |
+| `optimusdb_url` | No | `str` | OptimusDB URL injected into the templated manifest. Defaults to the Swarmchestrate OptimusDB endpoint. |
 | `use_kb` | No | `bool` | Controls the rendered `USE_KB` value in `emsconfig.yaml`. Defaults to `True`. Set to `False` to disable knowledge base mode. |
 | `upload_kb` | No | `bool` | If `True`, uploads the SAT file to the knowledge base before deployment. Defaults to `False`. |
 | `logger` | No | `logging.Logger \| None` | Custom logger. If omitted, stdout logging is configured automatically. |
@@ -168,7 +168,7 @@ This helper uses in-cluster Kubernetes config loaded from the pod's service acco
 
 ### `undeploy_monitoring(namespace: str | None = None, logger: logging.Logger | None = None) -> int`
 
-Undeploys the standard monitoring stack manifests and the related cleanup resources.
+Undeploys the monitoring stack manifests and the related cleanup resources.
 
 Like deployment, undeploy uses in-cluster Kubernetes config loaded from the pod's service account and does not read a local kubeconfig. That service account must have RBAC permission to delete the Kubernetes resources defined by the manifests and the additional cleanup resources. Unlike deployment, undeploy does not render `emsconfig.yaml` and does not require the original `sat_file`, `optimusdb_url`, or `use_kb` values. It deletes `ConfigMap/emsconfig` and `ConfigMap/tosca-model-configmap` directly by name and undeploys the remaining manifest-defined resources from the static manifest files.
 
@@ -181,7 +181,7 @@ Like deployment, undeploy uses in-cluster Kubernetes config loaded from the pod'
 
 ### `subscribe_metric(metric: str) -> str`
 
-Starts or reuses the shared standard metric listener for the requested metric topic.
+Starts or reuses the shared metric listener for the requested metric topic.
 
 | Parameter | Required | Type | Description |
 | --- | --- | --- | --- |
@@ -276,7 +276,6 @@ from swchmonclient import deploy_monitoring
 
 exit_code = deploy_monitoring(
     "./manifests/stressng.yaml",
-    "http://optimusdb.example/swarmkb",
     use_kb=True,
     upload_kb=False,
 )

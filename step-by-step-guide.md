@@ -328,12 +328,12 @@ cd monitoring-client
 
 > **Note:** Always check for the latest version on [PyPI](https://pypi.org/project/swchmonclient/) or the [GitHub releases page](https://github.com/Swarmchestrate/monitoring-client/releases) and install that instead.
 
-### 4.2 The `deploy_monitoring` API
+### 3.2 The `deploy_monitoring` API
 
 ```python
 deploy_monitoring(
     sat_file: str,
-    optimusdb_url: str,
+    optimusdb_url: str = "http://optimusdb.swarmchestrate.sztaki.hu/optimusdb1/swarmkb",
     use_kb: bool = True,
     upload_kb: bool = False,
     logger: logging.Logger | None = None,
