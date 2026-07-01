@@ -255,6 +255,8 @@ How the SAT is resolved depends on `use_kb`:
 
 ### 3.3 Deploy the monitoring stack
 
+> Before running the example, set `USE_KB` and `UPLOAD_KB` in `./examples/deploy.py` for your deployment. Use `USE_KB=True` and `UPLOAD_KB=True` when the script should upload the SAT and EMS should resolve it through the knowledgebase. Use `USE_KB=False` when the script should read the SAT from the local path and deploy it in that without using KB.
+
 ```
 python ./examples/deploy.py
 ```
