@@ -27,7 +27,7 @@ uv add swchmonclient
 
 ## Getting started
 
-See the [Step-by-step guide](#step-by-step-guide) for the full deployment and subscription flow.
+See the [Step-by-step guide](step-by-step-guide.md) for the full deployment and subscription flow.
 
 For runnable scripts, see [Examples](#examples). For the individual function signatures, see [Simple Snippets](#simple-snippets) and the [API Reference](#api-reference).
 
