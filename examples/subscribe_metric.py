@@ -5,7 +5,6 @@ import time
 from swchmonclient import query_metric_values, subscribe_metric, unsubscribe_metric
 
 METRIC_NAME = "cpu_util_prct"
-QUERY_WINDOW_SECONDS = 30
 POLL_INTERVAL_SECONDS = 5
 
 

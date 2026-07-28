@@ -5,9 +5,9 @@ from swchmonclient import deploy_monitoring
 # Set to the path of your SAT file
 SAT_FILE = str(Path(__file__).resolve().parents[1] / "manifests" / "stressng.yaml")
 # Set to False to disable knowledge base mode in the rendered EMS config
-USE_KB = True
+USE_KB = False
 # Set to True to upload the SAT file into the KB before deployment
-UPLOAD_KB = True
+UPLOAD_KB = False
 
 def main() -> int:
     exit_code = deploy_monitoring(
