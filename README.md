@@ -138,15 +138,19 @@ composite:
 - `"all"` resolves all Kubernetes VM private IPs internally
 - `"local"` resolves the current Kubernetes node InternalIP and starts one raw listener for it
 - Pass `source_file="./raw-metrics.json"` to replay values from a JSON file instead
-  of opening node connections. With a file, `node` can be an explicit file
-  `node_id`, a list of IDs, or `"all"` for every node defining the requested
-  metric.
+  of opening node connections. With a file, omit `node` (or use `"all"`) for
+  every file node defining the requested metric, select explicit `node_id`
+  values, or use `"cluster"` to dynamically map file profiles onto current
+  Kubernetes nodes.
 
 > **Important:** An explicit node/IP list is the simplest option when running outside Kubernetes-aware environments because it does not require Kubernetes API access.
 >
 > **Important:** `node="all"` requires in-cluster Kubernetes config and RBAC permission to read Kubernetes nodes.
 >
 > **Important:** `node="local"` also uses the Kubernetes API in-cluster. It resolves the current pod, then the node backing that pod, so it needs RBAC permission to read the current pod and its node.
+>
+> **Important:** File mode normally requires no Kubernetes access, but
+> `node="cluster"` requires permission to list Kubernetes nodes.
 
 ### File-backed raw metrics
 
@@ -174,13 +178,57 @@ future schema changes remain explicit:
 ```python
 threads = subscribe_metric_raw(
     "cpu_util_prct",
-    "all",
     source_file="./raw-metrics.json",
 )
 ```
 
 One file may contain multiple nodes and metrics. One file per node is also valid.
 Metric names may be plain names or full `/topic/...` destinations.
+
+In file mode, `node` controls which file entries are replayed:
+
+| File-mode selector | Behavior | Kubernetes access |
+| --- | --- | --- |
+| Omitted | Every file `node_id` defining the requested metric | None |
+| `"all"` | Same as omitting `node` | None |
+| `"node-a"` or `["node-a", "node-b"]` | Exactly the requested file IDs; every selected ID must define the metric | None |
+| `"cluster"` | Dynamically maps unique file profiles onto current Kubernetes VM private IPs | `get,list nodes` |
+
+Cluster mapping is one-to-one: a file profile is never reused for two cluster
+nodes. Existing valid assignments for the same source file are preserved across
+later subscriptions, exact profile/IP matches are preferred when initially
+available, and remaining assignments are deterministic. If the file has more
+profiles than the cluster, unused profiles remain idle. If the cluster has more
+nodes than the file has profiles, the unmatched cluster nodes are logged and do
+not receive replay data. The cluster snapshot is resolved when a cluster-mode
+subscription is made and refreshed every 30 seconds. New nodes receive unused
+profiles without changing valid assignments; departed nodes are unsubscribed
+and release their profiles. If refresh-time Kubernetes discovery or file
+validation fails, the last valid subscription state remains active and the
+failure is logged. `"local"` is not supported in file mode.
+
+The bundled ten-profile fixture can drive up to ten cluster nodes:
+
+```python
+from pathlib import Path
+
+source_file = Path("./examples/raw_metrics_10_nodes.json")
+
+cpu_threads = subscribe_metric_raw(
+    "cpu_util_prct",
+    "cluster",
+    source_file=source_file,
+)
+ram_threads = subscribe_metric_raw(
+    "ram_util_prct",
+    "cluster",
+    source_file=source_file,
+)
+```
+
+Both metrics use the same preserved profile-to-cluster assignment. Returned
+thread mappings and query results are keyed by the actual cluster VM private IP,
+not by `profile-01` through `profile-10`.
 
 #### Choosing between `values` and `samples`
 
@@ -273,13 +321,14 @@ A given `node_id` can have only one source kind at a time. Unsubscribe that node
 before switching it between live and file-backed data; this prevents duplicate,
 ambiguous samples for the same node.
 
-## Kubernetes access for `all` and `local`
+## Kubernetes access for `all`, `local`, and `cluster`
 
 These selectors use the in-cluster Kubernetes API:
 
 - explicit node/IP list: no Kubernetes API permission needed
-- `"all"`: cluster-wide `get` and `list` on `nodes`
+- live `"all"`: cluster-wide `get` and `list` on `nodes`
 - `"local"`: `get` on `pods` in the service account namespace, plus cluster-wide `get` and `list` on `nodes`
+- file-backed `"cluster"`: cluster-wide `get` and `list` on `nodes`
 
 Apply the bundled manifest:
 
@@ -411,7 +460,7 @@ Starts or reuses the shared metric listener for the requested metric topic.
 
 **Output:** `str` thread name of the shared listener, currently `metric-listener`.
 
-### `subscribe_metric_raw(metric: str, node: list[str] | str, cache_size: int | None = None, *, source_file: str | Path | None = None) -> dict[str, str]`
+### `subscribe_metric_raw(metric: str, node: list[str] | str | None = None, cache_size: int | None = None, *, source_file: str | Path | None = None) -> dict[str, str]`
 
 Starts raw metric producers that either connect directly to node IPs or replay a
 versioned JSON source file.
@@ -419,7 +468,7 @@ versioned JSON source file.
 | Parameter | Required | Type | Description |
 | --- | --- | --- | --- |
 | `metric` | Yes | `str` | Metric name or full topic destination. Plain names are normalized to `/topic/<metric>`. |
-| `node` | Yes | `list[str] \| str` | Raw node selector. In live mode, use an explicit node/IP list, `"all"`, or `"local"`. In file mode, use explicit `node_id` values or `"all"` for every node defining the metric. |
+| `node` | Live mode only | `list[str] \| str \| None` | In live mode, use an explicit node/IP list, `"all"`, or `"local"`; omitting it is an error. In file mode, omit it or use `"all"` for every matching file node, use explicit file IDs for a subset, or use `"cluster"` to map unique file profiles onto current Kubernetes VM private IPs. |
 | `cache_size` | No | `int \| None` | Per raw metric per node sample buffer size. If omitted, the default value `1000` is used. |
 | `source_file` | No | `str \| Path \| None` | Version 1 raw metric JSON file. If omitted, metrics come from live node connections. |
 
@@ -431,6 +480,9 @@ versioned JSON source file.
 - Raw subscriptions connect directly to each resolved node/IP instead of `MON_CLIENT_STOMP_HOST`.
 - File subscriptions start one replay thread per selected `node_id`; `"local"` is
   not supported for file sources.
+- File `node="cluster"` discovers Kubernetes VM private IPs and dynamically
+  assigns at most one file profile to each node without profile reuse; it
+  requires node-list RBAC and reconciles changes every 30 seconds.
 - File and live nodes may be subscribed to the same metric, but one `node_id`
   cannot use both source kinds concurrently.
 - Mixing `subscribe_metric(...)` and `subscribe_metric_raw(...)` for the same metric is rejected.

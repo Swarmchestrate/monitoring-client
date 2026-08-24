@@ -1,0 +1,155 @@
+{
+  "version": 1,
+  "nodes": [
+    {
+      "node_id": "profile-01",
+      "metrics": {
+        "cpu_util_prct": {
+          "interval_seconds": 5,
+          "values": [31.0, 34.0, 32.5],
+          "repeat": true
+        },
+        "ram_util_prct": {
+          "interval_seconds": 10,
+          "values": [51.0, 52.0, 51.5],
+          "repeat": true
+        }
+      }
+    },
+    {
+      "node_id": "profile-02",
+      "metrics": {
+        "cpu_util_prct": {
+          "interval_seconds": 5,
+          "values": [36.0, 39.5, 38.0],
+          "repeat": true
+        },
+        "ram_util_prct": {
+          "interval_seconds": 10,
+          "values": [54.0, 55.0, 54.5],
+          "repeat": true
+        }
+      }
+    },
+    {
+      "node_id": "profile-03",
+      "metrics": {
+        "cpu_util_prct": {
+          "interval_seconds": 5,
+          "values": [41.0, 43.0, 42.0],
+          "repeat": true
+        },
+        "ram_util_prct": {
+          "interval_seconds": 10,
+          "values": [57.0, 58.5, 58.0],
+          "repeat": true
+        }
+      }
+    },
+    {
+      "node_id": "profile-04",
+      "metrics": {
+        "cpu_util_prct": {
+          "interval_seconds": 5,
+          "values": [46.0, 49.0, 47.5],
+          "repeat": true
+        },
+        "ram_util_prct": {
+          "interval_seconds": 10,
+          "values": [60.0, 61.0, 60.5],
+          "repeat": true
+        }
+      }
+    },
+    {
+      "node_id": "profile-05",
+      "metrics": {
+        "cpu_util_prct": {
+          "interval_seconds": 5,
+          "values": [51.0, 54.5, 52.0],
+          "repeat": true
+        },
+        "ram_util_prct": {
+          "interval_seconds": 10,
+          "values": [63.0, 64.0, 63.5],
+          "repeat": true
+        }
+      }
+    },
+    {
+      "node_id": "profile-06",
+      "metrics": {
+        "cpu_util_prct": {
+          "interval_seconds": 5,
+          "values": [56.0, 58.0, 57.0],
+          "repeat": true
+        },
+        "ram_util_prct": {
+          "interval_seconds": 10,
+          "values": [66.0, 67.5, 67.0],
+          "repeat": true
+        }
+      }
+    },
+    {
+      "node_id": "profile-07",
+      "metrics": {
+        "cpu_util_prct": {
+          "interval_seconds": 5,
+          "values": [61.0, 64.0, 62.5],
+          "repeat": true
+        },
+        "ram_util_prct": {
+          "interval_seconds": 10,
+          "values": [69.0, 70.0, 69.5],
+          "repeat": true
+        }
+      }
+    },
+    {
+      "node_id": "profile-08",
+      "metrics": {
+        "cpu_util_prct": {
+          "interval_seconds": 5,
+          "values": [66.0, 69.5, 68.0],
+          "repeat": true
+        },
+        "ram_util_prct": {
+          "interval_seconds": 10,
+          "values": [72.0, 73.0, 72.5],
+          "repeat": true
+        }
+      }
+    },
+    {
+      "node_id": "profile-09",
+      "metrics": {
+        "cpu_util_prct": {
+          "interval_seconds": 5,
+          "values": [71.0, 73.0, 72.0],
+          "repeat": true
+        },
+        "ram_util_prct": {
+          "interval_seconds": 10,
+          "values": [75.0, 76.5, 76.0],
+          "repeat": true
+        }
+      }
+    },
+    {
+      "node_id": "profile-10",
+      "metrics": {
+        "cpu_util_prct": {
+          "interval_seconds": 5,
+          "values": [76.0, 79.0, 77.5],
+          "repeat": true
+        },
+        "ram_util_prct": {
+          "interval_seconds": 10,
+          "values": [78.0, 79.0, 78.5],
+          "repeat": true
+        }
+      }
+    }
+  ]
+}

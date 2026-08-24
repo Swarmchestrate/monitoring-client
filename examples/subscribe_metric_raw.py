@@ -1,6 +1,8 @@
 import logging
 import signal
 import time
+from pathlib import Path
+
 from swchmonclient import (
     query_metric_values_raw,
     subscribe_metric_raw,
@@ -12,6 +14,8 @@ NODES = ["100.104.109.71", "100.118.84.34"]
 RUN_SECONDS = 180
 QUERY_WINDOW_SECONDS = 30
 POLL_INTERVAL_SECONDS = 5
+RAW_METRICS_FILE = Path(__file__).with_name("raw_metrics.json")
+CLUSTER_RAW_METRICS_FILE = Path(__file__).with_name("raw_metrics_10_nodes.json")
 
 
 def main() -> int:
@@ -47,11 +51,16 @@ def main() -> int:
     # This does not connect to the monitoring system.
     # thread_names = subscribe_metric_raw(
     #     METRIC_NAME,
-    #     "all",
-    #     source_file="./examples/raw_metrics.json",
+    #     source_file=RAW_METRICS_FILE,
     # )
 
-    thread_names = subscribe_metric_raw(METRIC_NAME, "all")
+    # Option 5: Map up to ten unique file profiles onto current cluster nodes.
+    # This requires Kubernetes permission to list nodes and returns real node IPs.
+    thread_names = subscribe_metric_raw(
+        METRIC_NAME,
+        "cluster",
+        source_file=CLUSTER_RAW_METRICS_FILE,
+    )
 
     logging.info("Started raw listener threads: %s", thread_names)
 

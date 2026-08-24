@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import math
@@ -21,6 +22,8 @@ RAW_MAX_SAMPLES_PER_RAW_METRIC = 1000
 LISTENER_THREAD_NAME = "metric-listener"
 RAW_LISTENER_THREAD_NAME_PREFIX = "metric-raw-listener"
 RAW_FILE_THREAD_NAME_PREFIX = "metric-raw-file"
+RAW_FILE_CLUSTER_RECONCILER_THREAD_NAME = "metric-raw-file-cluster-reconciler"
+RAW_FILE_CLUSTER_REFRESH_SECONDS = 30.0
 RAW_METRIC_FILE_SCHEMA_VERSION = 1
 
 
@@ -64,6 +67,14 @@ class _FileReplayState:
     definition: _FileMetricDefinition
     point_index: int
     cycle_started_at: float
+
+
+@dataclass
+class _ClusterFileSubscription:
+    source_file: Path
+    cache_size: int
+    nodes: set[str]
+    active: bool = True
 
 
 @dataclass
@@ -140,6 +151,8 @@ class MetricSubscriptionManager:
         self._subscriptions: dict[str, _MetricSubscription] = {}
         self._raw_node_subscriptions: dict[str, _RawNodeSubscription] = {}
         self._raw_metric_nodes: dict[str, set[str]] = {}
+        self._file_cluster_mappings: dict[str, dict[str, str]] = {}
+        self._cluster_file_subscriptions: dict[str, _ClusterFileSubscription] = {}
         self._lock = threading.Lock()
 
     def subscribe_metric(self, metric: str) -> str:
@@ -186,13 +199,38 @@ class MetricSubscriptionManager:
     def subscribe_metric_raw(
         self,
         metric: str,
-        node: list[str] | str,
+        node: list[str] | str | None = None,
         cache_size: int | None = None,
         *,
         source_file: str | Path | None = None,
     ) -> dict[str, str]:
         destination = self._normalize_metric(metric)
+        cluster_source_file: Path | None = None
+        previous_cluster_nodes: set[str] = set()
+        if (
+            source_file is not None
+            and isinstance(node, str)
+            and node.strip().lower() == "cluster"
+        ):
+            cluster_source_file = Path(source_file).expanduser().resolve()
+            with self._lock:
+                existing_cluster_subscription = self._cluster_file_subscriptions.get(
+                    destination
+                )
+                if (
+                    existing_cluster_subscription is not None
+                    and existing_cluster_subscription.source_file != cluster_source_file
+                ):
+                    raise MetricSubscriptionError(
+                        f"Metric '{metric}' already uses cluster mapping from "
+                        f"'{existing_cluster_subscription.source_file}'"
+                    )
+                if existing_cluster_subscription is not None:
+                    previous_cluster_nodes = set(existing_cluster_subscription.nodes)
+
         if source_file is None:
+            if node is None:
+                raise ValueError("node is required when source_file is not provided")
             source_kind = "live"
             normalized_nodes = self._resolve_raw_nodes(node)
             file_definitions: dict[str, _FileMetricDefinition] = {}
@@ -204,7 +242,11 @@ class MetricSubscriptionManager:
                 node,
             )
         resolved_cache_size = self._resolve_raw_cache_size(cache_size)
-        if isinstance(node, str) and node.strip().lower() in {"all", "local"}:
+        if isinstance(node, str) and node.strip().lower() in {
+            "all",
+            "cluster",
+            "local",
+        }:
             if source_kind == "live":
                 logger.info(
                     "Subscribing to raw metric '%s' using node selector '%s' "
@@ -339,6 +381,24 @@ class MetricSubscriptionManager:
             raise MetricSubscriptionError(
                 f"Failed to subscribe to metric '{metric}' in raw mode: {error}"
             ) from error
+
+        if cluster_source_file is not None:
+            removed_nodes = previous_cluster_nodes - set(normalized_nodes)
+            if removed_nodes:
+                self._unsubscribe_metric_raw(
+                    metric,
+                    destination,
+                    sorted(removed_nodes),
+                )
+            with self._lock:
+                self._cluster_file_subscriptions[destination] = (
+                    _ClusterFileSubscription(
+                        source_file=cluster_source_file,
+                        cache_size=resolved_cache_size,
+                        nodes=set(normalized_nodes),
+                    )
+                )
+            self._ensure_cluster_file_reconciler()
 
         return thread_names
 
@@ -602,6 +662,71 @@ class MetricSubscriptionManager:
                 wait_seconds = min(wait_seconds, max(0.0, next_due_at - time.monotonic()))
             stop_event.wait(wait_seconds)
 
+    def _ensure_cluster_file_reconciler(self) -> None:
+        thread_state = self._thread_manager.list_threads().get(
+            RAW_FILE_CLUSTER_RECONCILER_THREAD_NAME
+        )
+        if thread_state is True:
+            return
+        if thread_state is False:
+            self._clear_stale_listener_thread(
+                RAW_FILE_CLUSTER_RECONCILER_THREAD_NAME
+            )
+
+        try:
+            self._thread_manager.start_monitoring_thread(
+                name=RAW_FILE_CLUSTER_RECONCILER_THREAD_NAME,
+                target=self._run_cluster_file_reconciler,
+            )
+        except ThreadManagementError as error:
+            logger.warning(
+                "Failed to start cluster file mapping reconciler; the initial "
+                "mapping remains active but will not refresh automatically: %s",
+                error,
+            )
+
+    def _run_cluster_file_reconciler(
+        self,
+        *,
+        stop_event: threading.Event,
+    ) -> None:
+        while not stop_event.wait(RAW_FILE_CLUSTER_REFRESH_SECONDS):
+            if not self._refresh_cluster_file_subscriptions_once(stop_event):
+                return
+
+    def _refresh_cluster_file_subscriptions_once(
+        self,
+        stop_event: threading.Event | None = None,
+    ) -> bool:
+        with self._lock:
+            subscriptions = list(self._cluster_file_subscriptions.items())
+
+        if not subscriptions:
+            return False
+
+        for destination, subscription in subscriptions:
+            if (
+                (stop_event is not None and stop_event.is_set())
+                or not subscription.active
+            ):
+                continue
+            try:
+                self.subscribe_metric_raw(
+                    destination,
+                    "cluster",
+                    cache_size=subscription.cache_size,
+                    source_file=subscription.source_file,
+                )
+            except (MetricSubscriptionError, ValueError) as error:
+                logger.warning(
+                    "Failed to refresh cluster mapping for raw metric '%s'; "
+                    "keeping the last valid subscription state: %s",
+                    destination,
+                    error,
+                )
+
+        return True
+
     def _unsubscribe_metric_raw(
         self,
         metric: str,
@@ -673,6 +798,12 @@ class MetricSubscriptionManager:
 
         with self._lock:
             self._finalize_stopped_raw_nodes(destination, stopped_nodes)
+            cluster_subscription = self._cluster_file_subscriptions.get(destination)
+            if cluster_subscription is not None:
+                cluster_subscription.nodes.difference_update(target_nodes)
+                if not cluster_subscription.nodes:
+                    cluster_subscription.active = False
+                    self._cluster_file_subscriptions.pop(destination, None)
 
     def _clear_stale_listener_thread(self, thread_name: str) -> None:
         thread_state = self._thread_manager.list_threads().get(thread_name)
@@ -761,14 +892,13 @@ class MetricSubscriptionManager:
 
         return cls._normalize_nodes(node)
 
-    @classmethod
     def _load_file_metric_definitions(
-        cls,
+        self,
         source_file: str | Path,
         destination: str,
-        node: list[str] | str,
+        node: list[str] | str | None,
     ) -> tuple[list[str], dict[str, _FileMetricDefinition]]:
-        path = Path(source_file).expanduser()
+        path = Path(source_file).expanduser().resolve()
         try:
             document = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError) as error:
@@ -821,7 +951,7 @@ class MetricSubscriptionManager:
                         f"Raw metric source node '{normalized_node_id}' has an "
                         "invalid metric name"
                     )
-                normalized_metric = cls._normalize_metric(raw_metric)
+                normalized_metric = self._normalize_metric(raw_metric)
                 if normalized_metric in normalized_metrics:
                     raise MetricSubscriptionError(
                         f"Metric '{normalized_metric}' is configured more than once "
@@ -830,48 +960,153 @@ class MetricSubscriptionManager:
                 normalized_metrics[normalized_metric] = raw_definition
             metrics_by_node[normalized_node_id] = normalized_metrics
 
-        if isinstance(node, str) and node.strip().lower() == "all":
-            normalized_nodes = [
-                node_id
+        if node is None or (
+            isinstance(node, str) and node.strip().lower() == "all"
+        ):
+            definition_sources = {
+                node_id: node_id
                 for node_id, metrics in metrics_by_node.items()
                 if destination in metrics
-            ]
+            }
+            normalized_nodes = list(definition_sources)
             if not normalized_nodes:
                 raise MetricSubscriptionError(
                     f"Metric '{destination}' is not configured for any node in "
                     f"raw metric source file '{path}'"
                 )
+        elif isinstance(node, str) and node.strip().lower() == "cluster":
+            try:
+                cluster_nodes = self._normalize_nodes(get_vm_private_ips())
+            except Exception as error:
+                raise MetricSubscriptionError(
+                    f"Failed to resolve raw metric nodes for 'cluster': {error}"
+                ) from error
+
+            cluster_mapping = self._resolve_file_cluster_mapping(
+                str(path),
+                list(metrics_by_node),
+                cluster_nodes,
+            )
+            definition_sources = {
+                cluster_node: profile_id
+                for cluster_node, profile_id in cluster_mapping.items()
+                if destination in metrics_by_node[profile_id]
+            }
+            normalized_nodes = list(definition_sources)
+            if not normalized_nodes:
+                raise MetricSubscriptionError(
+                    f"Metric '{destination}' is not configured for any file profile "
+                    f"mapped to the current Kubernetes cluster in '{path}'"
+                )
+            logger.info(
+                "Mapped raw metric file profiles to cluster nodes for '%s': %s",
+                destination,
+                {
+                    cluster_node: definition_sources[cluster_node]
+                    for cluster_node in normalized_nodes
+                },
+            )
         elif isinstance(node, str) and node.strip().lower() == "local":
             raise MetricSubscriptionError(
                 "The 'local' selector is not supported with source_file; "
-                "use an explicit node_id or 'all'"
+                "omit node, use an explicit node_id, 'all', or 'cluster'"
             )
         elif isinstance(node, str):
-            normalized_nodes = cls._normalize_nodes([node])
+            normalized_nodes = self._normalize_nodes([node])
+            definition_sources = {
+                current_node: current_node for current_node in normalized_nodes
+            }
         else:
-            normalized_nodes = cls._normalize_nodes(node)
+            normalized_nodes = self._normalize_nodes(node)
+            definition_sources = {
+                current_node: current_node for current_node in normalized_nodes
+            }
 
         definitions: dict[str, _FileMetricDefinition] = {}
         for node_id in normalized_nodes:
-            metrics = metrics_by_node.get(node_id)
+            profile_id = definition_sources[node_id]
+            metrics = metrics_by_node.get(profile_id)
             if metrics is None:
                 raise MetricSubscriptionError(
-                    f"Node '{node_id}' is not present in raw metric source file '{path}'"
+                    f"Node '{profile_id}' is not present in raw metric source file '{path}'"
                 )
 
             raw_definition = metrics.get(destination)
             if raw_definition is None:
                 raise MetricSubscriptionError(
-                    f"Metric '{destination}' is not configured for node '{node_id}' "
+                    f"Metric '{destination}' is not configured for node '{profile_id}' "
                     f"in raw metric source file '{path}'"
                 )
-            definitions[node_id] = cls._parse_file_metric_definition(
+            definitions[node_id] = self._parse_file_metric_definition(
                 raw_definition,
-                node_id,
+                profile_id,
                 destination,
             )
 
         return normalized_nodes, definitions
+
+    def _resolve_file_cluster_mapping(
+        self,
+        source_key: str,
+        profile_ids: list[str],
+        cluster_nodes: list[str],
+    ) -> dict[str, str]:
+        profiles = set(profile_ids)
+        targets = set(cluster_nodes)
+
+        with self._lock:
+            existing_mapping = self._file_cluster_mappings.get(source_key, {})
+            mapping: dict[str, str] = {}
+            used_profiles: set[str] = set()
+
+            for target, profile_id in existing_mapping.items():
+                if (
+                    target in targets
+                    and profile_id in profiles
+                    and profile_id not in used_profiles
+                ):
+                    mapping[target] = profile_id
+                    used_profiles.add(profile_id)
+
+            for target in sorted((targets & profiles) - set(mapping)):
+                if target in used_profiles:
+                    continue
+                mapping[target] = target
+                used_profiles.add(target)
+
+            available_profiles = profiles - used_profiles
+            for target in sorted(targets - set(mapping)):
+                if not available_profiles:
+                    break
+                profile_id = max(
+                    available_profiles,
+                    key=lambda candidate: (
+                        self._mapping_score(target, candidate),
+                        candidate,
+                    ),
+                )
+                mapping[target] = profile_id
+                available_profiles.remove(profile_id)
+
+            self._file_cluster_mappings[source_key] = dict(mapping)
+
+        unmapped_nodes = sorted(targets - set(mapping))
+        if unmapped_nodes:
+            logger.warning(
+                "Raw metric source file has %s profiles for %s cluster nodes; "
+                "nodes without a unique profile will not be replayed: %s",
+                len(profiles),
+                len(targets),
+                unmapped_nodes,
+            )
+
+        return mapping
+
+    @staticmethod
+    def _mapping_score(target: str, profile_id: str) -> bytes:
+        return hashlib.sha256(
+            f"{target}\0{profile_id}".encode("utf-8")
+        ).digest()
 
     @classmethod
     def _parse_file_metric_definition(
@@ -1057,12 +1292,12 @@ def subscribe_metric(metric: str) -> str:
 
 def subscribe_metric_raw(
     metric: str,
-    node: list[str] | str,
+    node: list[str] | str | None = None,
     cache_size: int | None = None,
     *,
     source_file: str | Path | None = None,
 ) -> dict[str, str]:
-    """Subscribe to live raw metric streams or replay them from a JSON source file."""
+    """Subscribe to live raw streams or replay selected nodes from a JSON file."""
     return _default_metric_subscription_manager.subscribe_metric_raw(
         metric,
         node,
