@@ -288,20 +288,51 @@ subscribe_metric_raw(
     metric: str,
     node: list[str] | str,
     cache_size: int | None = None,
+    *,
+    source_file: str | Path | None = None,
 ) -> dict[str, str]
 query_metric_values_raw(metric: str, seconds: int) -> dict[str, list[dict[str, Any]]]
 unsubscribe_metric(metric: str, nodes: list[str] | None = None) -> None
 ```
 
-`subscribe_metric_raw(...)` starts raw metric listeners that connect directly to node IPs.
+`subscribe_metric_raw(...)` starts raw metric listeners that connect directly to
+node IPs. Pass `source_file=` to replay values from a versioned JSON file without
+connecting to the monitoring system.
 
 | Parameter | Required | Type | Description |
 | --- | --- | --- | --- |
 | `metric` | Yes | `str` | Metric name or full topic destination. |
 | `node` | Yes | `list[str] \| str` | Explicit node/IP list, `"all"` for all nodes, or `"local"` for the current node. |
 | `cache_size` | No | `int \| None` | Per metric per node sample buffer size. Defaults to `1000`. |
+| `source_file` | No | `str \| Path \| None` | JSON replay file. In this mode, `node` selects explicit file `node_id` values or `"all"` for every node defining the metric; `"local"` is not supported. |
 
 `query_metric_values_raw(...)` returns and consumes buffered raw values from the requested time window. `unsubscribe_metric(...)` stops all raw node listeners for the metric, or only the nodes passed with `nodes=`.
+
+The file schema is:
+
+```json
+{
+  "version": 1,
+  "nodes": [
+    {
+      "node_id": "simulated-node-a",
+      "metrics": {
+        "cpu_util_prct": {
+          "interval_seconds": 5,
+          "values": [42.0, 44.5],
+          "repeat": true
+        }
+      }
+    }
+  ]
+}
+```
+
+`interval_seconds` defines regular reporting frequency; no separate
+`delta_time` is needed. For an irregular trace, use `samples` entries with
+`offset_seconds` and, when repeating, a `cycle_duration_seconds`. Replay offsets
+are anchored when the subscription starts, and emitted samples receive
+wall-clock timestamps so normal raw time-window queries continue to work.
 
 #### `undeploy_monitoring(...)`
 

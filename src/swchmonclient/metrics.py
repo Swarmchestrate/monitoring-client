@@ -1,10 +1,12 @@
 import json
 import logging
+import math
 import threading
 import time
-from ipaddress import ip_address
 from collections import deque
 from dataclasses import dataclass, field
+from ipaddress import ip_address
+from pathlib import Path
 from typing import Any, Deque
 
 from .deployer import get_current_vm_private_ip, get_vm_private_ips
@@ -18,6 +20,8 @@ MAX_SAMPLES_PER_METRIC = 1
 RAW_MAX_SAMPLES_PER_RAW_METRIC = 1000
 LISTENER_THREAD_NAME = "metric-listener"
 RAW_LISTENER_THREAD_NAME_PREFIX = "metric-raw-listener"
+RAW_FILE_THREAD_NAME_PREFIX = "metric-raw-file"
+RAW_METRIC_FILE_SCHEMA_VERSION = 1
 
 
 @dataclass
@@ -42,11 +46,33 @@ class _RawMetricSample:
     value: Any
 
 
+@dataclass(frozen=True)
+class _FileReplayPoint:
+    offset_seconds: float
+    value: Any
+
+
+@dataclass(frozen=True)
+class _FileMetricDefinition:
+    points: tuple[_FileReplayPoint, ...]
+    repeat: bool
+    cycle_duration_seconds: float
+
+
+@dataclass
+class _FileReplayState:
+    definition: _FileMetricDefinition
+    point_index: int
+    cycle_started_at: float
+
+
 @dataclass
 class _RawNodeSubscription:
     thread_name: str
+    source_kind: str = "live"
     destinations: set[str] = field(default_factory=set)
     samples_by_destination: dict[str, Deque[_RawMetricSample]] = field(default_factory=dict)
+    file_definitions: dict[str, _FileMetricDefinition] = field(default_factory=dict)
 
 
 def _normalize_timestamp(raw_timestamp: Any) -> float:
@@ -162,23 +188,57 @@ class MetricSubscriptionManager:
         metric: str,
         node: list[str] | str,
         cache_size: int | None = None,
+        *,
+        source_file: str | Path | None = None,
     ) -> dict[str, str]:
         destination = self._normalize_metric(metric)
-        normalized_nodes = self._resolve_raw_nodes(node)
+        if source_file is None:
+            source_kind = "live"
+            normalized_nodes = self._resolve_raw_nodes(node)
+            file_definitions: dict[str, _FileMetricDefinition] = {}
+        else:
+            source_kind = "file"
+            normalized_nodes, file_definitions = self._load_file_metric_definitions(
+                source_file,
+                destination,
+                node,
+            )
         resolved_cache_size = self._resolve_raw_cache_size(cache_size)
         if isinstance(node, str) and node.strip().lower() in {"all", "local"}:
-            logger.info(
-                "Subscribing to raw metric '%s' using node selector '%s' resolved to nodes %s",
-                metric,
-                node.strip().lower(),
-                normalized_nodes,
-            )
+            if source_kind == "live":
+                logger.info(
+                    "Subscribing to raw metric '%s' using node selector '%s' "
+                    "resolved to nodes %s",
+                    metric,
+                    node.strip().lower(),
+                    normalized_nodes,
+                )
+            else:
+                logger.info(
+                    "Subscribing to raw metric '%s' from file using node selector "
+                    "'%s' resolved to nodes %s",
+                    metric,
+                    node.strip().lower(),
+                    normalized_nodes,
+                )
 
         with self._lock:
             if destination in self._subscriptions:
                 raise MetricSubscriptionError(
                     f"Metric '{metric}' is already subscribed in standard mode"
                 )
+            for current_node in normalized_nodes:
+                existing_node = self._raw_node_subscriptions.get(current_node)
+                if (
+                    existing_node is not None
+                    and existing_node.source_kind != source_kind
+                ):
+                    raise MetricSubscriptionError(
+                        f"Node '{current_node}' is already subscribed from "
+                        f"{existing_node.source_kind}; unsubscribe it before "
+                        f"switching to {source_kind}"
+                    )
+
             raw_metric_nodes = self._raw_metric_nodes.setdefault(destination, set())
             planned_nodes: list[tuple[str, str, bool]] = []
             thread_names: dict[str, str] = {}
@@ -189,7 +249,12 @@ class MetricSubscriptionManager:
                 node_created = False
                 if node_subscription is None:
                     node_subscription = _RawNodeSubscription(
-                        thread_name=self._build_raw_thread_name(current_node)
+                        thread_name=(
+                            self._build_raw_thread_name(current_node)
+                            if source_kind == "live"
+                            else self._build_raw_file_thread_name(current_node)
+                        ),
+                        source_kind=source_kind,
                     )
                     self._raw_node_subscriptions[current_node] = node_subscription
                     node_created = True
@@ -211,6 +276,10 @@ class MetricSubscriptionManager:
                         existing_samples,
                         maxlen=resolved_cache_size,
                     )
+                if source_kind == "file":
+                    node_subscription.file_definitions[destination] = file_definitions[
+                        current_node
+                    ]
 
                 thread_name = node_subscription.thread_name
                 thread_names[current_node] = thread_name
@@ -221,24 +290,30 @@ class MetricSubscriptionManager:
                     continue
                 planned_nodes.append((current_node, thread_name, thread_state is False))
 
-        started_nodes: list[str] = []
+        started_nodes: list[tuple[str, str]] = []
         try:
             for current_node, thread_name, is_stale in planned_nodes:
                 if is_stale:
                     self._clear_stale_listener_thread(thread_name)
-                listener = CallbackStompListener(
-                    self._build_raw_metric_handler(current_node)
-                )
-                self._thread_manager.start_listener_thread(
-                    name=thread_name,
-                    host=current_node,
-                    destinations_provider=lambda node=current_node: self.get_raw_destinations(node),
-                    listener=listener,
-                )
-                started_nodes.append(current_node)
+                if source_kind == "live":
+                    listener = CallbackStompListener(
+                        self._build_raw_metric_handler(current_node)
+                    )
+                    self._thread_manager.start_listener_thread(
+                        name=thread_name,
+                        host=current_node,
+                        destinations_provider=lambda node=current_node: self.get_raw_destinations(node),
+                        listener=listener,
+                    )
+                else:
+                    self._thread_manager.start_monitoring_thread(
+                        name=thread_name,
+                        target=self._run_raw_file_source,
+                        node=current_node,
+                    )
+                started_nodes.append((current_node, thread_name))
         except (MetricSubscriptionError, ThreadManagementError) as error:
-            for started_node in started_nodes:
-                started_thread_name = self._build_raw_thread_name(started_node)
+            for _started_node, started_thread_name in started_nodes:
                 try:
                     self._thread_manager.stop_listener_thread(started_thread_name)
                 except ThreadManagementError:
@@ -253,6 +328,7 @@ class MetricSubscriptionManager:
                     if destination_added:
                         node_subscription.destinations.discard(destination)
                         node_subscription.samples_by_destination.pop(destination, None)
+                        node_subscription.file_definitions.pop(destination, None)
                         if raw_metric_nodes is not None:
                             raw_metric_nodes.discard(current_node)
                     if node_created and not node_subscription.destinations:
@@ -369,7 +445,7 @@ class MetricSubscriptionManager:
                 ]
                 node_subscription.samples_by_destination[destination] = deque(
                     remaining_samples,
-                    maxlen=RAW_MAX_SAMPLES_PER_RAW_METRIC,
+                    maxlen=samples.maxlen,
                 )
                 results[node] = [
                     {"timestamp": sample.timestamp, "value": sample.value}
@@ -439,6 +515,93 @@ class MetricSubscriptionManager:
 
         return handle_message
 
+    def _run_raw_file_source(
+        self,
+        node: str,
+        *,
+        stop_event: threading.Event,
+    ) -> None:
+        states: dict[str, _FileReplayState] = {}
+
+        while not stop_event.is_set():
+            monotonic_now = time.monotonic()
+            wall_now = time.time()
+            emissions: list[tuple[str, _FileMetricDefinition, float, Any]] = []
+            next_due_at: float | None = None
+
+            with self._lock:
+                node_subscription = self._raw_node_subscriptions.get(node)
+                if node_subscription is None or node_subscription.source_kind != "file":
+                    return
+                definitions = dict(node_subscription.file_definitions)
+
+            for destination in set(states) - set(definitions):
+                states.pop(destination, None)
+
+            for destination, definition in definitions.items():
+                state = states.get(destination)
+                if state is None or state.definition != definition:
+                    state = _FileReplayState(
+                        definition=definition,
+                        point_index=0,
+                        cycle_started_at=monotonic_now,
+                    )
+                    states[destination] = state
+
+                if state.point_index < 0:
+                    continue
+
+                due_at = (
+                    state.cycle_started_at
+                    + definition.points[state.point_index].offset_seconds
+                )
+                while due_at <= monotonic_now:
+                    point = definition.points[state.point_index]
+                    sample_timestamp = wall_now + (due_at - monotonic_now)
+                    emissions.append(
+                        (destination, definition, sample_timestamp, point.value)
+                    )
+
+                    state.point_index += 1
+                    if state.point_index == len(definition.points):
+                        if not definition.repeat:
+                            state.point_index = -1
+                            break
+                        state.point_index = 0
+                        state.cycle_started_at += definition.cycle_duration_seconds
+
+                    due_at = (
+                        state.cycle_started_at
+                        + definition.points[state.point_index].offset_seconds
+                    )
+
+                if state.point_index >= 0:
+                    next_due_at = (
+                        due_at if next_due_at is None else min(next_due_at, due_at)
+                    )
+
+            if emissions:
+                with self._lock:
+                    node_subscription = self._raw_node_subscriptions.get(node)
+                    if node_subscription is None:
+                        return
+                    for destination, definition, timestamp, value in emissions:
+                        if (
+                            node_subscription.file_definitions.get(destination)
+                            != definition
+                        ):
+                            continue
+                        samples = node_subscription.samples_by_destination.get(destination)
+                        if samples is not None:
+                            samples.append(
+                                _RawMetricSample(timestamp=timestamp, value=value)
+                            )
+
+            wait_seconds = 0.1
+            if next_due_at is not None:
+                wait_seconds = min(wait_seconds, max(0.0, next_due_at - time.monotonic()))
+            stop_event.wait(wait_seconds)
+
     def _unsubscribe_metric_raw(
         self,
         metric: str,
@@ -487,6 +650,7 @@ class MetricSubscriptionManager:
                     deque(maxlen=RAW_MAX_SAMPLES_PER_RAW_METRIC),
                 )
                 node_subscription.destinations.discard(destination)
+                node_subscription.file_definitions.pop(destination, None)
                 raw_metric_nodes.discard(current_node)
 
             if not raw_metric_nodes and not nodes_to_stop:
@@ -538,6 +702,7 @@ class MetricSubscriptionManager:
 
             node_subscription.samples_by_destination.pop(destination, None)
             node_subscription.destinations.discard(destination)
+            node_subscription.file_definitions.pop(destination, None)
             if raw_metric_nodes is not None:
                 raw_metric_nodes.discard(current_node)
             if not node_subscription.destinations:
@@ -596,6 +761,232 @@ class MetricSubscriptionManager:
 
         return cls._normalize_nodes(node)
 
+    @classmethod
+    def _load_file_metric_definitions(
+        cls,
+        source_file: str | Path,
+        destination: str,
+        node: list[str] | str,
+    ) -> tuple[list[str], dict[str, _FileMetricDefinition]]:
+        path = Path(source_file).expanduser()
+        try:
+            document = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+            raise MetricSubscriptionError(
+                f"Failed to read raw metric source file '{path}': {error}"
+            ) from error
+
+        if not isinstance(document, dict):
+            raise MetricSubscriptionError(
+                "Raw metric source file must contain a JSON object"
+            )
+        if document.get("version") != RAW_METRIC_FILE_SCHEMA_VERSION:
+            raise MetricSubscriptionError(
+                f"Raw metric source file version must be "
+                f"{RAW_METRIC_FILE_SCHEMA_VERSION}"
+            )
+
+        raw_nodes = document.get("nodes")
+        if not isinstance(raw_nodes, list) or not raw_nodes:
+            raise MetricSubscriptionError(
+                "Raw metric source file 'nodes' must be a non-empty array"
+            )
+
+        metrics_by_node: dict[str, dict[str, Any]] = {}
+        for raw_node in raw_nodes:
+            if not isinstance(raw_node, dict):
+                raise MetricSubscriptionError(
+                    "Each raw metric source node must be a JSON object"
+                )
+            node_id = raw_node.get("node_id")
+            if not isinstance(node_id, str) or not node_id.strip():
+                raise MetricSubscriptionError(
+                    "Each raw metric source node must have a non-empty 'node_id'"
+                )
+            normalized_node_id = node_id.strip()
+            if normalized_node_id in metrics_by_node:
+                raise MetricSubscriptionError(
+                    f"Duplicate node_id '{normalized_node_id}' in raw metric source file"
+                )
+            metrics = raw_node.get("metrics")
+            if not isinstance(metrics, dict):
+                raise MetricSubscriptionError(
+                    f"Raw metric source node '{normalized_node_id}' must have a "
+                    "'metrics' object"
+                )
+            normalized_metrics: dict[str, Any] = {}
+            for raw_metric, raw_definition in metrics.items():
+                if not isinstance(raw_metric, str) or not raw_metric.strip():
+                    raise MetricSubscriptionError(
+                        f"Raw metric source node '{normalized_node_id}' has an "
+                        "invalid metric name"
+                    )
+                normalized_metric = cls._normalize_metric(raw_metric)
+                if normalized_metric in normalized_metrics:
+                    raise MetricSubscriptionError(
+                        f"Metric '{normalized_metric}' is configured more than once "
+                        f"for node '{normalized_node_id}'"
+                    )
+                normalized_metrics[normalized_metric] = raw_definition
+            metrics_by_node[normalized_node_id] = normalized_metrics
+
+        if isinstance(node, str) and node.strip().lower() == "all":
+            normalized_nodes = [
+                node_id
+                for node_id, metrics in metrics_by_node.items()
+                if destination in metrics
+            ]
+            if not normalized_nodes:
+                raise MetricSubscriptionError(
+                    f"Metric '{destination}' is not configured for any node in "
+                    f"raw metric source file '{path}'"
+                )
+        elif isinstance(node, str) and node.strip().lower() == "local":
+            raise MetricSubscriptionError(
+                "The 'local' selector is not supported with source_file; "
+                "use an explicit node_id or 'all'"
+            )
+        elif isinstance(node, str):
+            normalized_nodes = cls._normalize_nodes([node])
+        else:
+            normalized_nodes = cls._normalize_nodes(node)
+
+        definitions: dict[str, _FileMetricDefinition] = {}
+        for node_id in normalized_nodes:
+            metrics = metrics_by_node.get(node_id)
+            if metrics is None:
+                raise MetricSubscriptionError(
+                    f"Node '{node_id}' is not present in raw metric source file '{path}'"
+                )
+
+            raw_definition = metrics.get(destination)
+            if raw_definition is None:
+                raise MetricSubscriptionError(
+                    f"Metric '{destination}' is not configured for node '{node_id}' "
+                    f"in raw metric source file '{path}'"
+                )
+            definitions[node_id] = cls._parse_file_metric_definition(
+                raw_definition,
+                node_id,
+                destination,
+            )
+
+        return normalized_nodes, definitions
+
+    @classmethod
+    def _parse_file_metric_definition(
+        cls,
+        raw_definition: Any,
+        node_id: str,
+        destination: str,
+    ) -> _FileMetricDefinition:
+        context = f"metric '{destination}' for node '{node_id}'"
+        if not isinstance(raw_definition, dict):
+            raise MetricSubscriptionError(f"Raw file {context} must be a JSON object")
+
+        repeat = raw_definition.get("repeat", True)
+        if not isinstance(repeat, bool):
+            raise MetricSubscriptionError(f"Raw file {context} 'repeat' must be boolean")
+
+        has_values = "values" in raw_definition
+        has_samples = "samples" in raw_definition
+        if has_values == has_samples:
+            raise MetricSubscriptionError(
+                f"Raw file {context} must contain exactly one of 'values' or 'samples'"
+            )
+
+        if has_values:
+            values = raw_definition["values"]
+            if not isinstance(values, list) or not values:
+                raise MetricSubscriptionError(
+                    f"Raw file {context} 'values' must be a non-empty array"
+                )
+            interval = cls._positive_number(
+                raw_definition.get("interval_seconds"),
+                f"Raw file {context} 'interval_seconds'",
+            )
+            points = tuple(
+                _FileReplayPoint(offset_seconds=index * interval, value=value)
+                for index, value in enumerate(values)
+            )
+            return _FileMetricDefinition(
+                points=points,
+                repeat=repeat,
+                cycle_duration_seconds=len(points) * interval,
+            )
+
+        raw_samples = raw_definition["samples"]
+        if not isinstance(raw_samples, list) or not raw_samples:
+            raise MetricSubscriptionError(
+                f"Raw file {context} 'samples' must be a non-empty array"
+            )
+
+        points_list: list[_FileReplayPoint] = []
+        previous_offset = -1.0
+        for raw_sample in raw_samples:
+            if not isinstance(raw_sample, dict) or "value" not in raw_sample:
+                raise MetricSubscriptionError(
+                    f"Raw file {context} samples must be objects containing 'value'"
+                )
+            offset = cls._non_negative_number(
+                raw_sample.get("offset_seconds"),
+                f"Raw file {context} sample 'offset_seconds'",
+            )
+            if offset <= previous_offset:
+                raise MetricSubscriptionError(
+                    f"Raw file {context} sample offsets must be strictly increasing"
+                )
+            points_list.append(
+                _FileReplayPoint(offset_seconds=offset, value=raw_sample["value"])
+            )
+            previous_offset = offset
+
+        if points_list[0].offset_seconds != 0:
+            raise MetricSubscriptionError(
+                f"Raw file {context} first sample offset must be 0"
+            )
+
+        if repeat:
+            cycle_duration = cls._positive_number(
+                raw_definition.get("cycle_duration_seconds"),
+                f"Raw file {context} 'cycle_duration_seconds'",
+            )
+            if cycle_duration <= points_list[-1].offset_seconds:
+                raise MetricSubscriptionError(
+                    f"Raw file {context} 'cycle_duration_seconds' must be greater "
+                    "than the final sample offset"
+                )
+        else:
+            cycle_duration = points_list[-1].offset_seconds
+
+        return _FileMetricDefinition(
+            points=tuple(points_list),
+            repeat=repeat,
+            cycle_duration_seconds=cycle_duration,
+        )
+
+    @staticmethod
+    def _positive_number(value: Any, label: str) -> float:
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value <= 0
+        ):
+            raise MetricSubscriptionError(f"{label} must be a positive number")
+        return float(value)
+
+    @staticmethod
+    def _non_negative_number(value: Any, label: str) -> float:
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value < 0
+        ):
+            raise MetricSubscriptionError(f"{label} must be a non-negative number")
+        return float(value)
+
     @staticmethod
     def _resolve_raw_cache_size(cache_size: int | None) -> int:
         if cache_size is None:
@@ -634,6 +1025,10 @@ class MetricSubscriptionManager:
         return f"{RAW_LISTENER_THREAD_NAME_PREFIX}:{node}"
 
     @staticmethod
+    def _build_raw_file_thread_name(node: str) -> str:
+        return f"{RAW_FILE_THREAD_NAME_PREFIX}:{node}"
+
+    @staticmethod
     def _should_store_raw_sample(target_node: str, parsed_node: str | None) -> bool:
         if parsed_node is None:
             return True
@@ -664,12 +1059,15 @@ def subscribe_metric_raw(
     metric: str,
     node: list[str] | str,
     cache_size: int | None = None,
+    *,
+    source_file: str | Path | None = None,
 ) -> dict[str, str]:
-    """Subscribe to raw metric streams for explicit nodes, ``all`` nodes, or the ``local`` node."""
+    """Subscribe to live raw metric streams or replay them from a JSON source file."""
     return _default_metric_subscription_manager.subscribe_metric_raw(
         metric,
         node,
         cache_size=cache_size,
+        source_file=source_file,
     )
 
 

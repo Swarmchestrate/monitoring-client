@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "nodes": [
+    {
+      "node_id": "simulated-node-a",
+      "metrics": {
+        "cpu_util_prct": {
+          "interval_seconds": 5,
+          "values": [42.0, 44.5, 41.2],
+          "repeat": true
+        }
+      }
+    },
+    {
+      "node_id": "simulated-node-b",
+      "metrics": {
+        "cpu_util_prct": {
+          "interval_seconds": 5,
+          "values": [65.0],
+          "repeat": true
+        }
+      }
+    }
+  ]
+}

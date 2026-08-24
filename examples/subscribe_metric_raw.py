@@ -43,6 +43,14 @@ def main() -> int:
     # Use this when you want metric data from every available node.
     # thread_names = subscribe_metric_raw(METRIC_NAME, "all")
 
+    # Option 4: Replay raw metrics for all node_id values in a JSON source file.
+    # This does not connect to the monitoring system.
+    # thread_names = subscribe_metric_raw(
+    #     METRIC_NAME,
+    #     "all",
+    #     source_file="./examples/raw_metrics.json",
+    # )
+
     thread_names = subscribe_metric_raw(METRIC_NAME, "all")
 
     logging.info("Started raw listener threads: %s", thread_names)
