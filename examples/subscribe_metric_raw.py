@@ -56,11 +56,13 @@ def main() -> int:
 
     # Option 5: Map up to ten unique file profiles onto current cluster nodes.
     # This requires Kubernetes permission to list nodes and returns real node IPs.
-    thread_names = subscribe_metric_raw(
-        METRIC_NAME,
-        "cluster",
-        source_file=CLUSTER_RAW_METRICS_FILE,
-    )
+    # thread_names = subscribe_metric_raw(
+    #     METRIC_NAME,
+    #     "cluster",
+    #     source_file=CLUSTER_RAW_METRICS_FILE,
+    # )
+
+    thread_names = subscribe_metric_raw(METRIC_NAME, "all")
 
     logging.info("Started raw listener threads: %s", thread_names)
 
