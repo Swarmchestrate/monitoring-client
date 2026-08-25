@@ -45,27 +45,71 @@ service_template:
         metrics:
           properties:
             raw:
-            - name: cpu_util_instance
+            - name: cpu_idle_instance
               sensor: "netdata"
               config:
                 scope_contexts: system.cpu
+                dimensions: idle
+              collection_frequency: "30 sec"
+              collection_output: "all"
+            - name: ram_free_instance
+              sensor: "netdata"
+              config:
+                scope_contexts: system.ram
+                dimensions: free
+              collection_frequency: "30 sec"
+              collection_output: "all"
+            - name: ram_total_instance
+              sensor: "netdata"
+              config:
+                scope_contexts: system.ram
                 results-aggregation: SUM
               collection_frequency: "30 sec"
               collection_output: "all"
-
+            - name: disk_read_activity
+              sensor: "netdata"
+              config:
+                scope_contexts: system.io
+                dimensions: reads
+              collection_frequency: "10 sec"
+              collection_output: "all"
+            - name: disk_write_activity
+              sensor: "netdata"
+              config:
+                scope_contexts: system.io
+                dimensions: writes
+              collection_frequency: "10 sec"
+              collection_output: "all"
             composite:
             - name: cpu_util_prct
-              formula: mean(cpu_util_instance)
+              formula: 100 - mean(cpu_idle_instance)
               collection_frequency: "30 sec"
               collection_output: "all"
               window_type: "sliding"
               window_size: "5 min"
-              grouping: "per_zone"
-
+              grouping: "global" #was per_zone
+            - name: ram_util_prct
+              formula: (mean(ram_total_instance)-mean(ram_free_instance))/mean(ram_total_instance)
+              collection_frequency: "30 sec"
+              collection_output: "all"
+              window_type: "sliding"
+              window_size: "5 min"
+              grouping: "global" #was per_zone
+            - name: avg_disk_utilization
+              formula: abs(mean(disk_read_activity))+abs(mean(disk_write_activity))
+              collection_frequency: "10 sec"
+              collection_output: "all"
+              window_type: "sliding"
+              window_size: "5 min"
+              grouping: "global" #was per_zone
         slo-constraints:
           properties:
             name: cpu_utilization
             metric: cpu_util_prct
+            operator: ">"
+            threshold: 80.0
+            name: ram_utilization
+            metric: ram_util_prct
             operator: ">"
             threshold: 80.0
 

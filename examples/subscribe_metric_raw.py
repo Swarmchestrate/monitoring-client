@@ -1,6 +1,8 @@
 import logging
 import signal
 import time
+from pathlib import Path
+
 from swchmonclient import (
     query_metric_values_raw,
     subscribe_metric_raw,
@@ -12,6 +14,8 @@ NODES = ["100.104.109.71", "100.118.84.34"]
 RUN_SECONDS = 180
 QUERY_WINDOW_SECONDS = 30
 POLL_INTERVAL_SECONDS = 5
+RAW_METRICS_FILE = Path(__file__).with_name("raw_metrics.json")
+CLUSTER_RAW_METRICS_FILE = Path(__file__).with_name("raw_metrics_10_nodes.json")
 
 
 def main() -> int:
@@ -42,6 +46,21 @@ def main() -> int:
     # Option 3: Subscribe to the raw metric for all nodes.
     # Use this when you want metric data from every available node.
     # thread_names = subscribe_metric_raw(METRIC_NAME, "all")
+
+    # Option 4: Replay raw metrics for all node_id values in a JSON source file.
+    # This does not connect to the monitoring system.
+    # thread_names = subscribe_metric_raw(
+    #     METRIC_NAME,
+    #     source_file=RAW_METRICS_FILE,
+    # )
+
+    # Option 5: Map up to ten unique file profiles onto current cluster nodes.
+    # This requires Kubernetes permission to list nodes and returns real node IPs.
+    # thread_names = subscribe_metric_raw(
+    #     METRIC_NAME,
+    #     "cluster",
+    #     source_file=CLUSTER_RAW_METRICS_FILE,
+    # )
 
     thread_names = subscribe_metric_raw(METRIC_NAME, "all")
 

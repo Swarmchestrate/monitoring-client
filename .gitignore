@@ -11,4 +11,3 @@ build/
 dist/
 *.egg-info/
 k3s.yaml
-tests/

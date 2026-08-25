@@ -33,33 +33,302 @@ For runnable scripts, see [Examples](#examples). For the individual function sig
 
 ## Available Metrics
 
-The table below is a placeholder for available metrics. Additional metrics will be finalized later.
+The following metrics are collected from Netdata or calculated from the collected raw metrics. Raw metrics represent values retrieved directly from Netdata, while composite metrics are derived using aggregation formulas over a sliding time window.
 
-| Metric name | Description |
-| --- | --- |
-| `cpu_util_prct` | CPU utilization percentage. |
+### Raw Metrics
+
+| Metric name           | Description                                                                                        | Example collection frequency |
+| --------------------- | -------------------------------------------------------------------------------------------------- | ---------------------------- |
+| `cpu_idle_instance`   | CPU idle percentage reported by Netdata from the `system.cpu` context using the `idle` dimension.  | 30 sec                       |
+| `ram_free_instance`   | Amount of free RAM reported by Netdata from the `system.ram` context using the `free` dimension.   | 30 sec                       |
+| `ram_total_instance`  | Total RAM reported by Netdata from the `system.ram` context. Values are aggregated using `SUM`.    | 30 sec                       |
+| `disk_read_activity`  | Disk read activity reported by Netdata from the `system.io` context using the `reads` dimension.   | 10 sec                       |
+| `disk_write_activity` | Disk write activity reported by Netdata from the `system.io` context using the `writes` dimension. | 10 sec                       |
+
+### Composite Metrics
+
+Composite metrics are calculated globally using a **5-minute sliding window**.
+
+| Metric name            | Description                                                                                                                                                                            | Formula                                                                           | Example collection frequency |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- | ---------------------------- |
+| `cpu_util_prct`        | Average CPU utilization calculated from the CPU idle percentage over the current 5-minute window.                                                                                      | `100 - mean(cpu_idle_instance)`                                                   | 30 sec                       |
+| `ram_util_prct`        | RAM utilization calculated from the average total and free RAM values over the current 5-minute window.                                                                                | `(mean(ram_total_instance) - mean(ram_free_instance)) / mean(ram_total_instance)` | 30 sec                       |
+| `avg_disk_utilization` | Combined average disk read and write activity over the current 5-minute window. Absolute values are used so that read and write activity contribute positively to the resulting value. | `abs(mean(disk_read_activity)) + abs(mean(disk_write_activity))`                  | 10 sec                       |
+
+All metrics use `collection_output: all`. Composite metrics use `grouping: global`, meaning that the resulting values are aggregated globally rather than calculated separately per availability zone.
+
+### Example Configuration
+
+The following configuration shows an example of how the raw and composite metrics can be defined. Values such as collection frequency, window size, and grouping are examples and can be adjusted to suit the deployment.
+
+```yaml
+raw:
+  - name: cpu_idle_instance
+    sensor: "netdata"
+    config:
+      scope_contexts: system.cpu
+      dimensions: idle
+    collection_frequency: "30 sec"
+    collection_output: "all"
+
+  - name: ram_free_instance
+    sensor: "netdata"
+    config:
+      scope_contexts: system.ram
+      dimensions: free
+    collection_frequency: "30 sec"
+    collection_output: "all"
+
+  - name: ram_total_instance
+    sensor: "netdata"
+    config:
+      scope_contexts: system.ram
+      results-aggregation: SUM
+    collection_frequency: "30 sec"
+    collection_output: "all"
+
+  - name: disk_read_activity
+    sensor: "netdata"
+    config:
+      scope_contexts: system.io
+      dimensions: reads
+    collection_frequency: "10 sec"
+    collection_output: "all"
+
+  - name: disk_write_activity
+    sensor: "netdata"
+    config:
+      scope_contexts: system.io
+      dimensions: writes
+    collection_frequency: "10 sec"
+    collection_output: "all"
+
+composite:
+  - name: cpu_util_prct
+    formula: 100 - mean(cpu_idle_instance)
+    collection_frequency: "30 sec"
+    collection_output: "all"
+    window_type: "sliding"
+    window_size: "5 min"
+    grouping: "global"
+
+  - name: ram_util_prct
+    formula: (mean(ram_total_instance)-mean(ram_free_instance))/mean(ram_total_instance)
+    collection_frequency: "30 sec"
+    collection_output: "all"
+    window_type: "sliding"
+    window_size: "5 min"
+    grouping: "global"
+
+  - name: avg_disk_utilization
+    formula: abs(mean(disk_read_activity))+abs(mean(disk_write_activity))
+    collection_frequency: "10 sec"
+    collection_output: "all"
+    window_type: "sliding"
+    window_size: "5 min"
+    grouping: "global"
+```
+
 
 ## Raw Metric Subscriptions
 
-`subscribe_metric_raw(metric, node)` supports three selector modes:
+`subscribe_metric_raw(metric, node)` supports three live selector modes:
 
 - `["10.0.0.1", "10.0.0.2"]` starts one raw listener per explicit node/IP
 - `"all"` resolves all Kubernetes VM private IPs internally
 - `"local"` resolves the current Kubernetes node InternalIP and starts one raw listener for it
+- Pass `source_file="./raw-metrics.json"` to replay values from a JSON file instead
+  of opening node connections. With a file, omit `node` (or use `"all"`) for
+  every file node defining the requested metric, select explicit `node_id`
+  values, or use `"cluster"` to dynamically map file profiles onto current
+  Kubernetes nodes.
 
 > **Important:** An explicit node/IP list is the simplest option when running outside Kubernetes-aware environments because it does not require Kubernetes API access.
 >
 > **Important:** `node="all"` requires in-cluster Kubernetes config and RBAC permission to read Kubernetes nodes.
 >
 > **Important:** `node="local"` also uses the Kubernetes API in-cluster. It resolves the current pod, then the node backing that pod, so it needs RBAC permission to read the current pod and its node.
+>
+> **Important:** File mode normally requires no Kubernetes access, but
+> `node="cluster"` requires permission to list Kubernetes nodes.
 
-## Kubernetes access for `all` and `local`
+### File-backed raw metrics
+
+Use a versioned JSON document so invalid fixtures fail at subscription time and
+future schema changes remain explicit:
+
+```json
+{
+  "version": 1,
+  "nodes": [
+    {
+      "node_id": "simulated-node-a",
+      "metrics": {
+        "cpu_util_prct": {
+          "interval_seconds": 5,
+          "values": [42.0, 44.5, 41.2],
+          "repeat": true
+        }
+      }
+    }
+  ]
+}
+```
+
+```python
+threads = subscribe_metric_raw(
+    "cpu_util_prct",
+    source_file="./raw-metrics.json",
+)
+```
+
+One file may contain multiple nodes and metrics. One file per node is also valid.
+Metric names may be plain names or full `/topic/...` destinations.
+
+In file mode, `node` controls which file entries are replayed:
+
+| File-mode selector | Behavior | Kubernetes access |
+| --- | --- | --- |
+| Omitted | Every file `node_id` defining the requested metric | None |
+| `"all"` | Same as omitting `node` | None |
+| `"node-a"` or `["node-a", "node-b"]` | Exactly the requested file IDs; every selected ID must define the metric | None |
+| `"cluster"` | Dynamically maps unique file profiles onto current Kubernetes VM private IPs | `get,list nodes` |
+
+Cluster mapping is one-to-one: a file profile is never reused for two cluster
+nodes. Existing valid assignments for the same source file are preserved across
+later subscriptions, exact profile/IP matches are preferred when initially
+available, and remaining assignments are deterministic. If the file has more
+profiles than the cluster, unused profiles remain idle. If the cluster has more
+nodes than the file has profiles, the unmatched cluster nodes are logged and do
+not receive replay data. The cluster snapshot is resolved when a cluster-mode
+subscription is made and refreshed every 30 seconds. New nodes receive unused
+profiles without changing valid assignments; departed nodes are unsubscribed
+and release their profiles. If refresh-time Kubernetes discovery or file
+validation fails, the last valid subscription state remains active and the
+failure is logged. `"local"` is not supported in file mode.
+
+The bundled ten-profile fixture can drive up to ten cluster nodes:
+
+```python
+from pathlib import Path
+
+source_file = Path("./examples/raw_metrics_10_nodes.json")
+
+cpu_threads = subscribe_metric_raw(
+    "cpu_util_prct",
+    "cluster",
+    source_file=source_file,
+)
+ram_threads = subscribe_metric_raw(
+    "ram_util_prct",
+    "cluster",
+    source_file=source_file,
+)
+```
+
+Both metrics use the same preserved profile-to-cluster assignment. Returned
+thread mappings and query results are keyed by the actual cluster VM private IP,
+not by `profile-01` through `profile-10`.
+
+#### Choosing between `values` and `samples`
+
+Each metric definition must use exactly one replay format. Use `values` when all
+readings are separated by the same amount of time, or use `samples` when each
+reading needs an explicit replay time. Do not put both fields in the same metric
+definition: they describe two different schedules, so the client rejects a
+definition containing both. A definition containing neither field is also
+rejected.
+
+| Format | Use when | Required timing field | First emission |
+| --- | --- | --- | --- |
+| `values` | Readings have a fixed interval | `interval_seconds` | Immediately when replay starts |
+| `samples` | Readings have irregular intervals | `offset_seconds` on every sample | At the first sample's offset, which must be `0` |
+
+For regularly sampled data, provide a non-empty `values` array and a positive
+`interval_seconds`. The first value is emitted immediately at offset `0`; each
+following value is emitted after another interval:
+
+```json
+{
+  "interval_seconds": 5,
+  "values": [42.0, 44.5, 41.2],
+  "repeat": true
+}
+```
+
+This schedule emits `42.0` at 0 seconds, `44.5` at 5 seconds, and `41.2` at
+10 seconds. Because `repeat` is `true`, the sequence starts again with `42.0`
+at 15 seconds. A single value with `repeat: true` reports a constant value once
+per interval. No `delta_time` is needed for this format.
+
+For irregular data, use a non-empty `samples` array instead. Every entry must
+contain a `value` and a non-negative `offset_seconds`. Offsets are relative to
+the start of replay, not Unix timestamps; the first offset must be `0`, and all
+following offsets must be strictly increasing:
+
+```json
+{
+  "repeat": true,
+  "cycle_duration_seconds": 10,
+  "samples": [
+    {"offset_seconds": 0, "value": 42.0},
+    {"offset_seconds": 2.5, "value": 44.5},
+    {"offset_seconds": 7, "value": 41.2}
+  ]
+}
+```
+
+This schedule emits `42.0` at 0 seconds, `44.5` at 2.5 seconds, and `41.2` at
+7 seconds. When an irregular schedule repeats, `cycle_duration_seconds` is
+required and must be greater than the final sample offset. In this example, the
+next cycle starts at 10 seconds. When `repeat` is `false`,
+`cycle_duration_seconds` is not required because the samples are emitted only
+once.
+
+`repeat` defaults to `true` in both formats. The following definition is invalid
+because it attempts to specify both a fixed-interval schedule and an explicit
+offset schedule:
+
+```json
+{
+  "interval_seconds": 5,
+  "values": [42.0, 44.5],
+  "samples": [
+    {"offset_seconds": 0, "value": 42.0},
+    {"offset_seconds": 2.5, "value": 44.5}
+  ]
+}
+```
+
+The client assigns each emitted sample a wall-clock timestamp matching its
+replay schedule, which keeps
+`query_metric_values_raw(metric, seconds)` time-window behavior consistent with
+live data.
+
+Live and file-backed nodes can be combined for the same metric with separate
+calls:
+
+```python
+live_threads = subscribe_metric_raw("cpu_util_prct", ["10.0.0.1"])
+file_threads = subscribe_metric_raw(
+    "cpu_util_prct",
+    ["simulated-node-a"],
+    source_file="./raw-metrics.json",
+)
+```
+
+A given `node_id` can have only one source kind at a time. Unsubscribe that node
+before switching it between live and file-backed data; this prevents duplicate,
+ambiguous samples for the same node.
+
+## Kubernetes access for `all`, `local`, and `cluster`
 
 These selectors use the in-cluster Kubernetes API:
 
 - explicit node/IP list: no Kubernetes API permission needed
-- `"all"`: cluster-wide `get` and `list` on `nodes`
+- live `"all"`: cluster-wide `get` and `list` on `nodes`
 - `"local"`: `get` on `pods` in the service account namespace, plus cluster-wide `get` and `list` on `nodes`
+- file-backed `"cluster"`: cluster-wide `get` and `list` on `nodes`
 
 Apply the bundled manifest:
 
@@ -191,24 +460,34 @@ Starts or reuses the shared metric listener for the requested metric topic.
 
 **Output:** `str` thread name of the shared listener, currently `metric-listener`.
 
-### `subscribe_metric_raw(metric: str, node: list[str] | str, cache_size: int | None = None) -> dict[str, str]`
+### `subscribe_metric_raw(metric: str, node: list[str] | str | None = None, cache_size: int | None = None, *, source_file: str | Path | None = None) -> dict[str, str]`
 
-Starts raw metric listeners that connect directly to node IPs.
+Starts raw metric producers that either connect directly to node IPs or replay a
+versioned JSON source file.
 
 | Parameter | Required | Type | Description |
 | --- | --- | --- | --- |
 | `metric` | Yes | `str` | Metric name or full topic destination. Plain names are normalized to `/topic/<metric>`. |
-| `node` | Yes | `list[str] \| str` | Raw node selector. Use an explicit node/IP list, `"all"` for all Kubernetes VM private IPs, or `"local"` for the current Kubernetes node InternalIP. |
+| `node` | Live mode only | `list[str] \| str \| None` | In live mode, use an explicit node/IP list, `"all"`, or `"local"`; omitting it is an error. In file mode, omit it or use `"all"` for every matching file node, use explicit file IDs for a subset, or use `"cluster"` to map unique file profiles onto current Kubernetes VM private IPs. |
 | `cache_size` | No | `int \| None` | Per raw metric per node sample buffer size. If omitted, the default value `1000` is used. |
+| `source_file` | No | `str \| Path \| None` | Version 1 raw metric JSON file. If omitted, metrics come from live node connections. |
 
-**Output:** `dict[str, str]` mapping each resolved node/IP to the listener thread name started for it.
+**Output:** `dict[str, str]` mapping each resolved node/IP to the worker thread name started for it.
 
 **Notes:**
-- Starts one raw listener thread per resolved node/IP and reuses it for additional raw metrics on that same node/IP.
+- Starts one worker thread per resolved node/IP and reuses it for additional raw
+  metrics from the same source kind on that node/IP.
 - Raw subscriptions connect directly to each resolved node/IP instead of `MON_CLIENT_STOMP_HOST`.
+- File subscriptions start one replay thread per selected `node_id`; `"local"` is
+  not supported for file sources.
+- File `node="cluster"` discovers Kubernetes VM private IPs and dynamically
+  assigns at most one file profile to each node without profile reuse; it
+  requires node-list RBAC and reconciles changes every 30 seconds.
+- File and live nodes may be subscribed to the same metric, but one `node_id`
+  cannot use both source kinds concurrently.
 - Mixing `subscribe_metric(...)` and `subscribe_metric_raw(...)` for the same metric is rejected.
-- **Important:** `node="all"` and `node="local"` use in-cluster Kubernetes API access.
-- **Important:** `node="local"` needs `get pods` in the current namespace and `get,list nodes` cluster-wide.
+- **Important:** In live mode, `node="all"` and `node="local"` use in-cluster Kubernetes API access.
+- **Important:** In live mode, `node="local"` needs `get pods` in the current namespace and `get,list nodes` cluster-wide.
 
 ### `query_metric_values(metric: str) -> list[Any]`
 

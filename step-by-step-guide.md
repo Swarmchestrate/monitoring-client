@@ -146,7 +146,7 @@ cd monitoring-client
 
 The service account needs two sets of permissions:
 
-1. **Metric subscriptions** (`node="all"` / `node="local"`): read pods and nodes.
+1. **Metric subscriptions** (`node="all"`, `node="local"`, or file-backed `node="cluster"`): read pods and/or nodes.
 2. **`deploy_monitoring(...)` / `undeploy_monitoring(...)`**: create, patch, get, list, and delete the resources defined by the monitoring manifests (`emsconfig.yaml` and `ems+netdata-k3s_parametric.yaml`): ConfigMaps, ServiceAccounts, Services, DaemonSets, Deployments, and the netdata/EMS RBAC objects.
 
 #### Easy way: apply the bundled manifest
@@ -286,22 +286,84 @@ unsubscribe_metric(metric: str) -> None
 ```python
 subscribe_metric_raw(
     metric: str,
-    node: list[str] | str,
+    node: list[str] | str | None = None,
     cache_size: int | None = None,
+    *,
+    source_file: str | Path | None = None,
 ) -> dict[str, str]
 query_metric_values_raw(metric: str, seconds: int) -> dict[str, list[dict[str, Any]]]
 unsubscribe_metric(metric: str, nodes: list[str] | None = None) -> None
 ```
 
-`subscribe_metric_raw(...)` starts raw metric listeners that connect directly to node IPs.
+`subscribe_metric_raw(...)` starts raw metric listeners that connect directly to
+node IPs. Pass `source_file=` to replay values from a versioned JSON file without
+connecting to the monitoring system.
 
 | Parameter | Required | Type | Description |
 | --- | --- | --- | --- |
 | `metric` | Yes | `str` | Metric name or full topic destination. |
-| `node` | Yes | `list[str] \| str` | Explicit node/IP list, `"all"` for all nodes, or `"local"` for the current node. |
+| `node` | Live mode only | `list[str] \| str \| None` | Live mode requires explicit node/IP values, `"all"`, or `"local"`. In file mode, omit it for all matching file nodes, select explicit file IDs, or use `"cluster"`. |
 | `cache_size` | No | `int \| None` | Per metric per node sample buffer size. Defaults to `1000`. |
+| `source_file` | No | `str \| Path \| None` | JSON replay file. In this mode, omitted `node` or `"all"` selects every file node defining the metric; `"cluster"` maps unique file profiles onto Kubernetes VM private IPs; `"local"` is not supported. |
+
+File mode does not require a `node` argument:
+
+```python
+subscribe_metric_raw(
+    "cpu_util_prct",
+    source_file="./examples/raw_metrics.json",
+)
+```
+
+Use `node="cluster"` to discover the current Kubernetes VM private IPs and map
+file profiles onto them. The mapping is one-to-one and deterministic: existing
+valid assignments for the source file are preserved, exact profile/IP matches
+are preferred when initially available, and a profile is never reused for two
+nodes. Surplus profiles remain unused; surplus cluster nodes are logged and do
+not receive replay values. Cluster discovery requires permission to list nodes.
+The client refreshes the cluster every 30 seconds, maps new nodes without
+changing valid assignments, and unsubscribes departed nodes. A failed refresh
+keeps the last valid replay state active and logs the error.
+
+For example, the bundled ten-profile fixture can replay CPU and RAM data for up
+to ten cluster nodes while preserving the same assignment across both metrics:
+
+```python
+source_file = "./examples/raw_metrics_10_nodes.json"
+subscribe_metric_raw("cpu_util_prct", "cluster", source_file=source_file)
+subscribe_metric_raw("ram_util_prct", "cluster", source_file=source_file)
+```
+
+Query results use actual Kubernetes VM private IPs as keys, not the file profile
+IDs.
 
 `query_metric_values_raw(...)` returns and consumes buffered raw values from the requested time window. `unsubscribe_metric(...)` stops all raw node listeners for the metric, or only the nodes passed with `nodes=`.
+
+The file schema is:
+
+```json
+{
+  "version": 1,
+  "nodes": [
+    {
+      "node_id": "simulated-node-a",
+      "metrics": {
+        "cpu_util_prct": {
+          "interval_seconds": 5,
+          "values": [42.0, 44.5],
+          "repeat": true
+        }
+      }
+    }
+  ]
+}
+```
+
+`interval_seconds` defines regular reporting frequency; no separate
+`delta_time` is needed. For an irregular trace, use `samples` entries with
+`offset_seconds` and, when repeating, a `cycle_duration_seconds`. Replay offsets
+are anchored when the subscription starts, and emitted samples receive
+wall-clock timestamps so normal raw time-window queries continue to work.
 
 #### `undeploy_monitoring(...)`
 
@@ -441,7 +503,7 @@ unsubscribe_metric("cpu_util_prct")
 
 ### 3.5 Gather raw metrics directly from node IPs (EPA)
 
-`subscribe_metric_raw(metric, node)` supports three selector modes:
+Live `subscribe_metric_raw(metric, node)` supports three selector modes:
 
 | Selector | Behavior | RBAC needed |
 | --- | --- | --- |
@@ -614,7 +676,7 @@ subjects:
     name: mon-client
     namespace: ${NAMESPACE}
 ---
-# --- Required for node="all" and node="local": get,list nodes cluster-wide ---
+# --- Required for node="all", node="local", and file node="cluster": get,list nodes cluster-wide ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
