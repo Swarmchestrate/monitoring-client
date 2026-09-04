@@ -8,12 +8,15 @@ SAT_FILE = str(Path(__file__).resolve().parents[1] / "manifests" / "stressng.yam
 USE_KB = False
 # Set to True to upload the SAT file into the KB before deployment
 UPLOAD_KB = False
+# Namespace in which the monitoring stack will be deployed
+NAMESPACE = "swarm-system"
 
 def main() -> int:
     exit_code = deploy_monitoring(
         sat_file=SAT_FILE,
         use_kb=USE_KB,
         upload_kb=UPLOAD_KB,
+        namespace=NAMESPACE,
     )
 
     if exit_code == 0:

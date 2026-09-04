@@ -333,6 +333,7 @@ These selectors use the in-cluster Kubernetes API:
 Apply the bundled manifest:
 
 ```bash
+kubectl create namespace swarm-system
 kubectl apply -f ./manifests/mon-client-rbac.yaml
 ```
 
@@ -342,29 +343,29 @@ That manifest creates:
 - namespace `Role` + `RoleBinding` for `get pods`
 - `ClusterRole` + `ClusterRoleBinding` for `get,list nodes`
 
-If you deploy outside `default`, update the namespace fields in the manifest before applying it.
+The bundled manifest defaults to `swarm-system`. If you deploy elsewhere, update its namespace fields before applying it.
 
 The same permissions can be created with imperative `kubectl` commands:
 
 ```bash
-kubectl create serviceaccount mon-client -n default
-kubectl create role mon-client-pod-reader --verb=get --resource=pods -n default
+kubectl create serviceaccount mon-client -n swarm-system
+kubectl create role mon-client-pod-reader --verb=get --resource=pods -n swarm-system
 kubectl create rolebinding mon-client-pod-reader \
   --role=mon-client-pod-reader \
-  --serviceaccount=default:mon-client \
-  -n default
+  --serviceaccount=swarm-system:mon-client \
+  -n swarm-system
 kubectl create clusterrole mon-client-node-reader --verb=get,list --resource=nodes
 kubectl create clusterrolebinding mon-client-node-reader \
   --clusterrole=mon-client-node-reader \
-  --serviceaccount=default:mon-client
+  --serviceaccount=swarm-system:mon-client
 ```
 
 Verify access with:
 
 ```bash
-kubectl auth can-i get pods --as=system:serviceaccount:default:mon-client -n default
-kubectl auth can-i get nodes --as=system:serviceaccount:default:mon-client
-kubectl auth can-i list nodes --as=system:serviceaccount:default:mon-client
+kubectl auth can-i get pods --as=system:serviceaccount:swarm-system:mon-client -n swarm-system
+kubectl auth can-i get nodes --as=system:serviceaccount:swarm-system:mon-client
+kubectl auth can-i list nodes --as=system:serviceaccount:swarm-system:mon-client
 ```
 
 If you see an error like `Failed to list Kubernetes nodes: Forbidden` or `Failed to determine current Kubernetes node IP: Forbidden`, the service account can authenticate but does not have enough RBAC to read the required Kubernetes resources.
@@ -421,11 +422,11 @@ If you subscribe multiple raw metrics for the same node/IP, the library reuses t
 
 ## API Reference
 
-### `deploy_monitoring(sat_file: str, optimusdb_url: str = "http://optimusdb.swarmchestrate.sztaki.hu/optimusdb1/swarmkb", use_kb: bool = True, upload_kb: bool = False, logger: logging.Logger | None = None) -> int`
+### `deploy_monitoring(sat_file: str, optimusdb_url: str = "http://optimusdb.swarmchestrate.sztaki.hu/optimusdb1/swarmkb", use_kb: bool = True, upload_kb: bool = False, logger: logging.Logger | None = None, namespace: str = "swarm-system") -> int`
 
 Deploys the standard monitoring stack manifests.
 
-This helper uses in-cluster Kubernetes config loaded from the pod's service account. It does not read a local kubeconfig. The service account used by the pod must have RBAC permission to create or patch the Kubernetes resources defined by the monitoring manifests. The `sat_file`, `optimusdb_url`, `use_kb`, and `upload_kb` values are part of the deployment flow. The `sat_file` input is a local file path. During deployment, the SAT file is read locally, its basename is converted into a unique filename by appending a UTC timestamp, and that generated filename is injected into the rendered manifest as `SAT_FILE`. The SAT file content is also deployed as `ConfigMap/tosca-model-configmap` under the fixed key `test-tosca-model.yaml`, which is the filename expected by the application. `optimusdb_url` is optional and defaults to the Swarmchestrate OptimusDB endpoint. By default, `use_kb=True`, so EMS is configured to resolve the SAT through the knowledge base exposed by the configured `optimusdb_url`. Set `use_kb=False` to keep knowledge-base mode disabled in the rendered manifest and use the SAT content from that ConfigMap instead. When `upload_kb=True`, the SAT file is also uploaded to the knowledge base under that generated unique filename before the Kubernetes resources are deployed. If `./manifests/emsconfig.yaml` or `./manifests/ems+netdata-k3s_parametric.yaml` is missing locally, the library downloads it from the release assets before deployment. When a local copy already exists, it validates the content against the release asset, logs whether it matches, and keeps the local file if it differs.
+This helper uses in-cluster Kubernetes config loaded from the pod's service account. It does not read a local kubeconfig. The service account used by the pod must have RBAC permission to create or patch the Kubernetes resources defined by the monitoring manifests. Namespaced resources and ServiceAccount subjects in RBAC bindings are assigned to `namespace`, which defaults to `swarm-system`; the namespace must already exist. The `sat_file`, `optimusdb_url`, `use_kb`, and `upload_kb` values are part of the deployment flow. The `sat_file` input is a local file path. During deployment, the SAT file is read locally, its basename is converted into a unique filename by appending a UTC timestamp, and that generated filename is injected into the rendered manifest as `SAT_FILE`. The SAT file content is also deployed as `ConfigMap/tosca-model-configmap` under the fixed key `test-tosca-model.yaml`, which is the filename expected by the application. `optimusdb_url` is optional and defaults to the Swarmchestrate OptimusDB endpoint. By default, `use_kb=True`, so EMS is configured to resolve the SAT through the knowledge base exposed by the configured `optimusdb_url`. Set `use_kb=False` to keep knowledge-base mode disabled in the rendered manifest and use the SAT content from that ConfigMap instead. When `upload_kb=True`, the SAT file is also uploaded to the knowledge base under that generated unique filename before the Kubernetes resources are deployed. If `./manifests/emsconfig.yaml` or `./manifests/ems+netdata-k3s_parametric.yaml` is missing locally, the library downloads it from the release assets before deployment. When a local copy already exists, it validates the content against the release asset, logs whether it matches, and keeps the local file if it differs.
 
 | Parameter | Required | Type | Description |
 | --- | --- | --- | --- |
@@ -434,10 +435,11 @@ This helper uses in-cluster Kubernetes config loaded from the pod's service acco
 | `use_kb` | No | `bool` | Controls the rendered `USE_KB` value in `emsconfig.yaml`. Defaults to `True`. Set to `False` to disable knowledge base mode. |
 | `upload_kb` | No | `bool` | If `True`, uploads the SAT file to the knowledge base before deployment. Defaults to `False`. |
 | `logger` | No | `logging.Logger \| None` | Custom logger. If omitted, stdout logging is configured automatically. |
+| `namespace` | No | `str` | Target namespace for namespaced resources and ServiceAccount binding subjects. Defaults to `swarm-system`. |
 
 **Output:** process-style exit code: `0` on success, `1` if one or more deploy steps fail.
 
-### `undeploy_monitoring(namespace: str | None = None, logger: logging.Logger | None = None) -> int`
+### `undeploy_monitoring(namespace: str | None = "swarm-system", logger: logging.Logger | None = None) -> int`
 
 Undeploys the monitoring stack manifests and the related cleanup resources.
 
@@ -445,7 +447,7 @@ Like deployment, undeploy uses in-cluster Kubernetes config loaded from the pod'
 
 | Parameter | Required | Type | Description |
 | --- | --- | --- | --- |
-| `namespace` | No | `str \| None` | Namespace override for deleting namespaced resources. If omitted, manifest/default namespaces are used. |
+| `namespace` | No | `str \| None` | Namespace containing the resources to delete. Defaults to `swarm-system`. |
 | `logger` | No | `logging.Logger \| None` | Custom logger. If omitted, stdout logging is configured automatically. |
 
 **Output:** process-style exit code: `0` on success, `1` if one or more undeploy steps fail.
@@ -559,6 +561,7 @@ exit_code = deploy_monitoring(
     "./manifests/stressng.yaml",
     use_kb=True,
     upload_kb=False,
+    namespace="swarm-system",
 )
 ```
 
@@ -568,7 +571,7 @@ exit_code = deploy_monitoring(
 from swchmonclient import undeploy_monitoring
 
 exit_code = undeploy_monitoring(
-    namespace="default",
+    namespace="swarm-system",
 )
 ```
 

@@ -154,10 +154,11 @@ The service account needs two sets of permissions:
 The repository's `./manifests/mon-client-rbac.yaml` contains everything. Apply it:
 
 ```bash
+sudo kubectl create namespace swarm-system
 sudo kubectl apply -f ./manifests/mon-client-rbac.yaml
 ```
 
-> If you deploy outside the `default` namespace, update the namespace fields in the manifest before applying.
+> The bundled manifest defaults to `swarm-system`. If you deploy elsewhere, update the namespace fields before applying.
 
 
 If you need a namespace-parametric RBAC manifest instead of editing the bundled one, use the [appendix manifest](#appendix-namespace-parametric-rbac).
@@ -165,23 +166,23 @@ If you need a namespace-parametric RBAC manifest instead of editing the bundled 
 ### 2.3 Verify RBAC
 
 ```bash
-sudo kubectl auth can-i get pods --as=system:serviceaccount:default:mon-client -n default
-sudo kubectl auth can-i get nodes --as=system:serviceaccount:default:mon-client
-sudo kubectl auth can-i list nodes --as=system:serviceaccount:default:mon-client
+sudo kubectl auth can-i get pods --as=system:serviceaccount:swarm-system:mon-client -n swarm-system
+sudo kubectl auth can-i get nodes --as=system:serviceaccount:swarm-system:mon-client
+sudo kubectl auth can-i list nodes --as=system:serviceaccount:swarm-system:mon-client
 # deployer permissions:
-sudo kubectl auth can-i create configmaps --as=system:serviceaccount:default:mon-client -n default
-sudo kubectl auth can-i create daemonsets --as=system:serviceaccount:default:mon-client -n default
-sudo kubectl auth can-i create deployments --as=system:serviceaccount:default:mon-client -n default
-sudo kubectl auth can-i delete clusterroles --as=system:serviceaccount:default:mon-client
+sudo kubectl auth can-i create configmaps --as=system:serviceaccount:swarm-system:mon-client -n swarm-system
+sudo kubectl auth can-i create daemonsets --as=system:serviceaccount:swarm-system:mon-client -n swarm-system
+sudo kubectl auth can-i create deployments --as=system:serviceaccount:swarm-system:mon-client -n swarm-system
+sudo kubectl auth can-i delete clusterroles --as=system:serviceaccount:swarm-system:mon-client
 ```
 
-All should return `yes`. If you installed into another namespace, replace `default` with your namespace in both `--as=system:serviceaccount:default:mon-client` and `-n default`. If you later see `Failed to list Kubernetes nodes: Forbidden` or `Failed to determine current Kubernetes node IP: Forbidden`, the service account authenticates but lacks RBAC.
+All should return `yes`. If you installed into another namespace, replace `swarm-system` with your namespace in both the service-account identity and `-n` argument. If you later see `Failed to list Kubernetes nodes: Forbidden` or `Failed to determine current Kubernetes node IP: Forbidden`, the service account authenticates but lacks RBAC.
 
 ### 2.4 Deploy a test pod
 
 #### Easy way: apply the bundled manifest
 
-> If you installed `mon-client` outside the `default` namespace, update the `namespace` field in `./manifests/mon-client-test-pod.yaml` before applying it. The bundled test pod manifest uses `default`.
+> The bundled test pod manifest uses `swarm-system`. If you installed `mon-client` elsewhere, update its `namespace` field before applying it.
 
 ```bash
 sudo kubectl apply -f ./manifests/mon-client-test-pod.yaml
@@ -190,9 +191,9 @@ sudo kubectl apply -f ./manifests/mon-client-test-pod.yaml
 Wait for it to become ready, then open a shell:
 
 ```bash
-sudo kubectl wait --for=condition=Ready pod/python-shell --timeout=120s
-sudo kubectl get pod python-shell
-sudo kubectl exec -it python-shell -- bash
+sudo kubectl wait -n swarm-system --for=condition=Ready pod/python-shell --timeout=120s
+sudo kubectl get pod -n swarm-system python-shell
+sudo kubectl exec -n swarm-system -it python-shell -- bash
 ```
 
 If you installed into another namespace, add `-n <NAMESPACE>` to these `kubectl` commands.
@@ -235,6 +236,7 @@ deploy_monitoring(
     use_kb: bool = True,
     upload_kb: bool = False,
     logger: logging.Logger | None = None,
+    namespace: str = "swarm-system",
 ) -> int
 ```
 
@@ -247,6 +249,7 @@ deploy_monitoring(
 | `use_kb` | No | `bool` | `True` | Controls the rendered `USE_KB` value in `emsconfig.yaml`. Defaults to `True`, so EMS resolves the SAT through the knowledgebase at `optimusdb_url`. Set to `False` to use the SAT content from the ConfigMap instead. |
 | `upload_kb` | No | `bool` | `False` | If `True`, uploads the SAT file to the knowledgebase (under its generated unique filename) before the Kubernetes resources are deployed. Defaults to `False`. |
 | `logger` | No | `logging.Logger \| None` | `None` | Custom logger. If omitted, stdout logging is configured automatically. |
+| `namespace` | No | `str` | `swarm-system` | Namespace assigned to namespaced monitoring resources and ServiceAccount subjects in RBAC bindings. The namespace must already exist. |
 
 Default `optimusdb_url`: `http://optimusdb.swarmchestrate.sztaki.hu/optimusdb1/swarmkb`
 
@@ -369,7 +372,7 @@ wall-clock timestamps so normal raw time-window queries continue to work.
 
 ```python
 undeploy_monitoring(
-    namespace: str | None = None,
+    namespace: str | None = "swarm-system",
     logger: logging.Logger | None = None,
 ) -> int
 ```
@@ -378,14 +381,14 @@ undeploy_monitoring(
 
 | Parameter | Required | Type | Description |
 | --- | --- | --- | --- |
-| `namespace` | No | `str \| None` | Namespace override for deleting namespaced resources. If omitted, manifest/default namespaces are used. |
+| `namespace` | No | `str \| None` | Namespace containing the resources to delete. Defaults to `swarm-system`. |
 | `logger` | No | `logging.Logger \| None` | Custom logger. If omitted, stdout logging is configured automatically. |
 
 **Output:** a process-style exit code. `0` on success, `1` if one or more undeploy steps fail.
 
 ### 3.3 Deploy the monitoring stack
 
-> Before running the example, set `USE_KB` and `UPLOAD_KB` in `./examples/deploy.py` for your deployment. Use `USE_KB=True` and `UPLOAD_KB=True` when the script should upload the SAT and EMS should resolve it through the knowledgebase. Use `USE_KB=False` when the script should read the SAT from the local path and deploy it in the ConfigMap.
+> Before running the example, set `USE_KB`, `UPLOAD_KB`, and `NAMESPACE` in `./examples/deploy.py` for your deployment. `NAMESPACE` defaults to `swarm-system`, which must already exist. Use `USE_KB=True` and `UPLOAD_KB=True` when the script should upload the SAT and EMS should resolve it through the knowledgebase. Use `USE_KB=False` when the script should read the SAT from the local path and deploy it in the ConfigMap.
 
 ```
 python ./examples/deploy.py
@@ -402,30 +405,30 @@ Expected output:
 2026-07-01 12:36:41,884 INFO swchmonclient.deploy_monitoring: Uploaded SAT file stressng-20260701123641529960.yaml to the knowledge base.
 2026-07-01 12:36:41,899 INFO swchmonclient.deploy_monitoring: Deploying ConfigMap/tosca-model-configmap from SAT file /monitoring-client/manifests/stressng.yaml ...
 2026-07-01 12:36:41,954 INFO swchmonclient.deploy_monitoring:   Created or patched resources:
-2026-07-01 12:36:41,954 INFO swchmonclient.deploy_monitoring:   - ConfigMap/tosca-model-configmap (apiVersion=v1, namespace=default)
+2026-07-01 12:36:41,954 INFO swchmonclient.deploy_monitoring:   - ConfigMap/tosca-model-configmap (apiVersion=v1, namespace=swarm-system)
 2026-07-01 12:36:42,002 INFO swchmonclient.deploy_monitoring: Deploying ./manifests/emsconfig.yaml with variables:
 2026-07-01 12:36:42,004 INFO swchmonclient.deploy_monitoring:     • sat_file: stressng-20260701123641529960.yaml
 2026-07-01 12:36:42,004 INFO swchmonclient.deploy_monitoring:     • optimusdb_url: http://optimusdb.swarmchestrate.sztaki.hu/optimusdb1/swarmkb
 2026-07-01 12:36:42,004 INFO swchmonclient.deploy_monitoring:     • use_kb: True
 2026-07-01 12:36:42,004 INFO swchmonclient.deploy_monitoring:     • upload_kb: True
 2026-07-01 12:36:42,072 INFO swchmonclient.deploy_monitoring:   Created or patched resources:
-2026-07-01 12:36:42,072 INFO swchmonclient.deploy_monitoring:   - ConfigMap/emsconfig (apiVersion=v1, namespace=default)
+2026-07-01 12:36:42,072 INFO swchmonclient.deploy_monitoring:   - ConfigMap/emsconfig (apiVersion=v1, namespace=swarm-system)
 2026-07-01 12:36:42,072 INFO swchmonclient.deploy_monitoring: Deploying ./manifests/ems+netdata-k3s_parametric.yaml ...
 2026-07-01 12:36:42,523 INFO swchmonclient.deploy_monitoring:   Created or patched resources:
-2026-07-01 12:36:42,523 INFO swchmonclient.deploy_monitoring:   - ServiceAccount/netdata (apiVersion=v1, namespace=default)
-2026-07-01 12:36:42,524 INFO swchmonclient.deploy_monitoring:   - ConfigMap/netdata-conf-child (apiVersion=v1, namespace=default)
-2026-07-01 12:36:42,524 INFO swchmonclient.deploy_monitoring:   - ConfigMap/netdata-child-sd-config-map (apiVersion=v1, namespace=default)
+2026-07-01 12:36:42,523 INFO swchmonclient.deploy_monitoring:   - ServiceAccount/netdata (apiVersion=v1, namespace=swarm-system)
+2026-07-01 12:36:42,524 INFO swchmonclient.deploy_monitoring:   - ConfigMap/netdata-conf-child (apiVersion=v1, namespace=swarm-system)
+2026-07-01 12:36:42,524 INFO swchmonclient.deploy_monitoring:   - ConfigMap/netdata-child-sd-config-map (apiVersion=v1, namespace=swarm-system)
 2026-07-01 12:36:42,524 INFO swchmonclient.deploy_monitoring:   - ClusterRole/netdata (apiVersion=rbac.authorization.k8s.io/v1, namespace=<cluster-scoped>)
 2026-07-01 12:36:42,524 INFO swchmonclient.deploy_monitoring:   - ClusterRoleBinding/netdata (apiVersion=rbac.authorization.k8s.io/v1, namespace=<cluster-scoped>)
-2026-07-01 12:36:42,524 INFO swchmonclient.deploy_monitoring:   - DaemonSet/netdata-child (apiVersion=apps/v1, namespace=default)
-2026-07-01 12:36:42,524 INFO swchmonclient.deploy_monitoring:   - ServiceAccount/ems-server-service-account (apiVersion=v1, namespace=default)
+2026-07-01 12:36:42,524 INFO swchmonclient.deploy_monitoring:   - DaemonSet/netdata-child (apiVersion=apps/v1, namespace=swarm-system)
+2026-07-01 12:36:42,524 INFO swchmonclient.deploy_monitoring:   - ServiceAccount/ems-server-service-account (apiVersion=v1, namespace=swarm-system)
 2026-07-01 12:36:42,524 INFO swchmonclient.deploy_monitoring:   - ClusterRole/ems-server-cluster-role (apiVersion=rbac.authorization.k8s.io/v1, namespace=<cluster-scoped>)
 2026-07-01 12:36:42,524 INFO swchmonclient.deploy_monitoring:   - ClusterRoleBinding/ems-server-cluster-role-binding (apiVersion=rbac.authorization.k8s.io/v1, namespace=<cluster-scoped>)
-2026-07-01 12:36:42,524 INFO swchmonclient.deploy_monitoring:   - Role/ems-server-role (apiVersion=rbac.authorization.k8s.io/v1, namespace=default)
-2026-07-01 12:36:42,524 INFO swchmonclient.deploy_monitoring:   - RoleBinding/ems-server-role-binding (apiVersion=rbac.authorization.k8s.io/v1, namespace=default)
-2026-07-01 12:36:42,524 INFO swchmonclient.deploy_monitoring:   - Service/emsserver-ems-server (apiVersion=v1, namespace=default)
-2026-07-01 12:36:42,524 INFO swchmonclient.deploy_monitoring:   - ConfigMap/tosca-script-config (apiVersion=v1, namespace=default)
-2026-07-01 12:36:42,524 INFO swchmonclient.deploy_monitoring:   - Deployment/emsserver-ems-server (apiVersion=apps/v1, namespace=default)
+2026-07-01 12:36:42,524 INFO swchmonclient.deploy_monitoring:   - Role/ems-server-role (apiVersion=rbac.authorization.k8s.io/v1, namespace=swarm-system)
+2026-07-01 12:36:42,524 INFO swchmonclient.deploy_monitoring:   - RoleBinding/ems-server-role-binding (apiVersion=rbac.authorization.k8s.io/v1, namespace=swarm-system)
+2026-07-01 12:36:42,524 INFO swchmonclient.deploy_monitoring:   - Service/emsserver-ems-server (apiVersion=v1, namespace=swarm-system)
+2026-07-01 12:36:42,524 INFO swchmonclient.deploy_monitoring:   - ConfigMap/tosca-script-config (apiVersion=v1, namespace=swarm-system)
+2026-07-01 12:36:42,524 INFO swchmonclient.deploy_monitoring:   - Deployment/emsserver-ems-server (apiVersion=apps/v1, namespace=swarm-system)
 2026-07-01 12:36:42,524 INFO swchmonclient.deploy_monitoring: All manifests deployed successfully.
 Monitoring deployed successfully.
 ```
@@ -445,11 +448,11 @@ Sample output:
 
 ```
 NAMESPACE     NAME                                      READY   STATUS      RESTARTS   AGE
-default       ems-client-daemonset-8k6bx                1/1     Running     0          29h
-default       ems-client-daemonset-h5b7w                1/1     Running     0          29h
-default       emsserver-ems-server-58c4c8df96-kl2wl     1/1     Running     0          29h
-default       netdata-child-hr4jb                       1/1     Running     0          29h
-default       netdata-child-qr48g                       1/1     Running     0          29h
+swarm-system  ems-client-daemonset-8k6bx                1/1     Running     0          29h
+swarm-system  ems-client-daemonset-h5b7w                1/1     Running     0          29h
+swarm-system  emsserver-ems-server-58c4c8df96-kl2wl     1/1     Running     0          29h
+swarm-system  netdata-child-hr4jb                       1/1     Running     0          29h
+swarm-system  netdata-child-qr48g                       1/1     Running     0          29h
 ...
 ```
 
@@ -599,7 +602,7 @@ Run it from inside the pod, either from Python:
 ```python
 from swchmonclient import undeploy_monitoring
 
-exit_code = undeploy_monitoring(namespace="default")
+exit_code = undeploy_monitoring(namespace="swarm-system")
 ```
 
 or via the bundled example:
@@ -637,10 +640,10 @@ sudo kubectl delete pod -n <NAMESPACE> python-shell
 
 ## Appendix: Namespace-parametric RBAC
 
-Use this version if you want to install the `mon-client` service account and RBAC into a namespace other than `default` without editing the bundled manifest:
+Use this version if you want to install the `mon-client` service account and RBAC into a configurable namespace without editing the bundled manifest:
 
 ```bash
-NAMESPACE=${NAMESPACE:-default}
+NAMESPACE=${NAMESPACE:-swarm-system}
 
 sudo kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | sudo kubectl apply -f -
 
@@ -741,7 +744,7 @@ subjects:
 EOF
 ```
 
-For example, to install into `monitoring` instead of `default`:
+For example, to install into `monitoring` instead of `swarm-system`:
 
 ```bash
 NAMESPACE=monitoring

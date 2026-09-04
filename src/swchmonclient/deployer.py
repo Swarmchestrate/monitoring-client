@@ -17,7 +17,6 @@ from kubernetes.client.exceptions import ApiException
 
 from .exceptions import DeploymentError
 
-
 MONITORING_TEMPLATE_MANIFEST = "./manifests/emsconfig.yaml"
 TOSCA_MODEL_CONFIGMAP_NAME = "tosca-model-configmap"
 TOSCA_MODEL_CONFIGMAP_KEY = "test-tosca-model.yaml"
@@ -36,7 +35,7 @@ MONITORING_EXTRA_RESOURCES_TO_DELETE = (
     ("v1", "ConfigMap", "ems-client-configmap", "configmap"),
     ("v1", "ConfigMap", "monitoring-configmap", "configmap"),
 )
-DEFAULT_MONITORING_NAMESPACE = "default"
+DEFAULT_MONITORING_NAMESPACE = "swarm-system"
 MANIFEST_DOWNLOAD_TIMEOUT_SECONDS = 30
 SERVICEACCOUNT_NAMESPACE_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
 MONITORING_MANIFEST_RELEASE_URLS = {
@@ -94,10 +93,15 @@ class K8sDeployer:
             if not name:
                 raise DeploymentError("Each manifest document must include metadata.name")
 
-            resource_namespace = namespace or metadata.get("namespace") or "default"
+            resource_namespace = namespace or metadata.get("namespace") or DEFAULT_MONITORING_NAMESPACE
             namespaced = bool(getattr(resource, "namespaced", True))
             if namespaced:
                 metadata["namespace"] = resource_namespace
+
+            if namespace and document["kind"] in {"RoleBinding", "ClusterRoleBinding"}:
+                for subject in document.get("subjects", []):
+                    if subject.get("kind") == "ServiceAccount":
+                        subject["namespace"] = namespace
 
             try:
                 if namespaced:
@@ -148,7 +152,7 @@ class K8sDeployer:
             if not name:
                 continue
 
-            resource_namespace = namespace or metadata.get("namespace") or "default"
+            resource_namespace = namespace or metadata.get("namespace") or DEFAULT_MONITORING_NAMESPACE
             namespaced = bool(getattr(resource, "namespaced", True))
 
             try:
@@ -180,7 +184,7 @@ class K8sDeployer:
             namespaced = bool(getattr(resource, "namespaced", True))
 
             if namespaced:
-                resource_namespace = namespace or "default"
+                resource_namespace = namespace or DEFAULT_MONITORING_NAMESPACE
                 resource.delete(name=name, namespace=resource_namespace)
             else:
                 resource.delete(name=name)
@@ -196,7 +200,7 @@ class K8sDeployer:
     def destroy_app(
         self,
         label_selector: str,
-        namespace: str = "default",
+        namespace: str = DEFAULT_MONITORING_NAMESPACE,
         kinds: list[tuple[str, str]] | None = None,
     ) -> int:
         """Delete resources matching a label selector in a namespace."""
@@ -452,14 +456,17 @@ def _upload_sat_to_kb(
     logger.info("Uploaded SAT file %s to the knowledge base.", sat_filename)
 
 
-def _render_tosca_model_configmap_manifest(sat_content: str) -> str:
+def _render_tosca_model_configmap_manifest(
+    sat_content: str,
+    namespace: str = DEFAULT_MONITORING_NAMESPACE,
+) -> str:
 
     manifest = {
         "apiVersion": "v1",
         "kind": "ConfigMap",
         "metadata": {
             "name": TOSCA_MODEL_CONFIGMAP_NAME,
-            "namespace": DEFAULT_MONITORING_NAMESPACE,
+            "namespace": namespace,
         },
         "data": {
             TOSCA_MODEL_CONFIGMAP_KEY: sat_content,
@@ -475,18 +482,22 @@ def _deploy_tosca_model_configmap(
     sat_file: str,
     sat_content: str,
     logger: Logger,
+    namespace: str = DEFAULT_MONITORING_NAMESPACE,
 ) -> int:
     deployer = K8sDeployer()
     rendered_manifest_path: str | None = None
 
     try:
-        rendered_manifest_path = _render_tosca_model_configmap_manifest(sat_content)
+        rendered_manifest_path = _render_tosca_model_configmap_manifest(
+            sat_content,
+            namespace=namespace,
+        )
         logger.info(
             "Deploying ConfigMap/%s from SAT file %s ...",
             TOSCA_MODEL_CONFIGMAP_NAME,
             sat_file,
         )
-        deployed = deployer.deploy_manifest(rendered_manifest_path)
+        deployed = deployer.deploy_manifest(rendered_manifest_path, namespace=namespace)
     except DeploymentError as error:
         logger.error("  ERROR: %s", error)
         return 1
@@ -514,6 +525,7 @@ def _deploy_tosca_model_configmap(
 
 def _deploy_manifests_with_optional_render(
     manifests: Sequence[str],
+    namespace: str = DEFAULT_MONITORING_NAMESPACE,
     template_manifest_path: str | None = None,
     template_variables: dict[str, str] | None = None,
     logger: Logger | None = None,
@@ -551,7 +563,7 @@ def _deploy_manifests_with_optional_render(
                 active_logger.info("Deploying %s ...", display_path)
 
             try:
-                deployed = deployer.deploy_manifest(manifest_path)
+                deployed = deployer.deploy_manifest(manifest_path, namespace=namespace)
             except DeploymentError as error:
                 active_logger.error("  ERROR: %s", error)
                 overall_ok = False
@@ -656,6 +668,7 @@ def deploy_monitoring(
     use_kb: bool = True,
     upload_kb: bool = False,
     logger: Logger | None = None,
+    namespace: str = DEFAULT_MONITORING_NAMESPACE,
 ) -> int:
     """Deploy the standard monitoring stack manifests."""
     from .logging_utils import configure_stdout_logger
@@ -680,11 +693,17 @@ def deploy_monitoring(
             active_logger.error("  ERROR: %s", error)
             active_logger.info("One or more manifests failed to deploy.")
             return 1
-    if _deploy_tosca_model_configmap(sat_file, sat_content, active_logger) != 0:
+    if _deploy_tosca_model_configmap(
+        sat_file,
+        sat_content,
+        active_logger,
+        namespace=namespace,
+    ) != 0:
         active_logger.info("One or more manifests failed to deploy.")
         return 1
     return _deploy_manifests_with_optional_render(
         manifests=MONITORING_DEPLOY_MANIFESTS,
+        namespace=namespace,
         template_manifest_path=MONITORING_TEMPLATE_MANIFEST,
         template_variables={
             "sat_file": deployed_sat_filename,
@@ -698,7 +717,7 @@ def deploy_monitoring(
 
 
 def undeploy_monitoring(
-    namespace: str | None = None,
+    namespace: str | None = DEFAULT_MONITORING_NAMESPACE,
     logger: Logger | None = None,
 ) -> int:
     """Undeploy the standard monitoring stack manifests and cleanup resources."""
@@ -713,7 +732,7 @@ def undeploy_monitoring(
         return 1
     return _undeploy_manifests_with_optional_render(
         manifests=MONITORING_UNDEPLOY_MANIFESTS,
-        namespace=namespace,
+        namespace=namespace or DEFAULT_MONITORING_NAMESPACE,
         extra_resources_to_delete=MONITORING_EXTRA_RESOURCES_TO_DELETE,
         logger=active_logger,
         logger_name="swchmonclient.undeploy_monitoring",
