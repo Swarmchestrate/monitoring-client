@@ -217,8 +217,8 @@ These steps run **inside the test pod** (the in-cluster service account config i
 
 ```bash
 apt update && apt install -y nano git && git clone https://github.com/Swarmchestrate/monitoring-client.git
-pip install swchmonclient==0.2.1
 cd monitoring-client
+pip install .
 ```
 
 > **Note:** Always check for the latest version on [PyPI](https://pypi.org/project/swchmonclient/) or the [GitHub releases page](https://github.com/Swarmchestrate/monitoring-client/releases) and install that instead.
@@ -438,7 +438,7 @@ Notes:
 - Uses in-cluster Kubernetes config from the pod's service account. It does not read a local kubeconfig.
 - If `./manifests/emsconfig.yaml` or `./manifests/ems+netdata-k3s_parametric.yaml` is missing locally, the library downloads it from the `v0.1.0` release assets automatically. Existing local copies are validated against the release and replaced if they differ.
 
-Verify on the master that monitoring workloads are coming up:
+Verify on the **master** that monitoring workloads are coming up:
 
 ```bash
 sudo kubectl get pods -A
