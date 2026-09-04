@@ -109,6 +109,12 @@ class K8sDeployer:
                 else:
                     resource.create(body=document)
             except ApiException as error:
+                if namespaced and error.status == 404:
+                    raise DeploymentError(
+                        f'Target namespace "{resource_namespace}" does not exist. '
+                        f"Create it before deployment with: kubectl create namespace "
+                        f"{resource_namespace}"
+                    ) from error
                 if error.status == 409:
                     if namespaced:
                         resource.patch(

@@ -3,7 +3,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+import pytest
 import yaml
+from kubernetes.client.exceptions import ApiException
 
 from swchmonclient import deploy_monitoring
 from swchmonclient.deployer import (
@@ -13,6 +15,7 @@ from swchmonclient.deployer import (
     K8sDeployer,
     _render_tosca_model_configmap_manifest,
 )
+from swchmonclient.exceptions import DeploymentError
 
 
 def test_deploy_monitoring_propagates_requested_namespace():
@@ -113,6 +116,37 @@ roleRef:
     assert "namespace" not in binding_body["subjects"][1]
     assert deployed[0]["namespace"] == "swarm-system"
     assert deployed[1]["namespace"] == ""
+
+
+def test_deploy_manifest_reports_missing_target_namespace(tmp_path):
+    manifest_path = tmp_path / "configmap.yaml"
+    manifest_path.write_text(
+        """apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: settings
+""",
+        encoding="utf-8",
+    )
+
+    config_map_resource = Mock(namespaced=True)
+    config_map_resource.create.side_effect = ApiException(status=404, reason="Not Found")
+    deployer = K8sDeployer.__new__(K8sDeployer)
+    deployer.dynamic_client = SimpleNamespace(
+        resources=SimpleNamespace(get=lambda *, api_version, kind: config_map_resource)
+    )
+
+    with pytest.raises(
+        DeploymentError,
+        match=(
+            'Target namespace "missing-system" does not exist. '
+            "Create it before deployment with: kubectl create namespace missing-system"
+        ),
+    ):
+        deployer.deploy_manifest(
+            str(manifest_path),
+            namespace="missing-system",
+        )
 
 
 def test_tosca_model_configmap_uses_default_monitoring_namespace():
