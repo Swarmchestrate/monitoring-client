@@ -2,7 +2,7 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: python-shell
-  namespace: default
+  namespace: swarm-system
   labels:
     app: mon-client-test
 spec:

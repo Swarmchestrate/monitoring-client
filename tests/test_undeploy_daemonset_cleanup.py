@@ -3,6 +3,7 @@ import io
 from unittest.mock import call, patch
 
 from examples import undeploy
+from swchmonclient.deployer import DEFAULT_MONITORING_NAMESPACE
 
 
 def test_undeploy_removes_named_cleanup_resources():
@@ -25,31 +26,31 @@ def test_undeploy_removes_named_cleanup_resources():
                 api_version="v1",
                 kind="ConfigMap",
                 name="emsconfig",
-                namespace="default",
+                namespace=DEFAULT_MONITORING_NAMESPACE,
             ),
             call(
                 api_version="v1",
                 kind="ConfigMap",
                 name="tosca-model-configmap",
-                namespace="default",
+                namespace=DEFAULT_MONITORING_NAMESPACE,
             ),
             call(
                 api_version="apps/v1",
                 kind="DaemonSet",
                 name="ems-client-daemonset",
-                namespace="default",
+                namespace=DEFAULT_MONITORING_NAMESPACE,
             ),
             call(
                 api_version="v1",
                 kind="ConfigMap",
                 name="ems-client-configmap",
-                namespace="default",
+                namespace=DEFAULT_MONITORING_NAMESPACE,
             ),
             call(
                 api_version="v1",
                 kind="ConfigMap",
                 name="monitoring-configmap",
-                namespace="default",
+                namespace=DEFAULT_MONITORING_NAMESPACE,
             ),
         ]
     )

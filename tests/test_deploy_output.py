@@ -4,7 +4,7 @@ from unittest.mock import call, patch
 
 from examples import deploy
 from swchmonclient import deploy_monitoring
-from swchmonclient.deployer import DEFAULT_OPTIMUSDB_URL
+from swchmonclient.deployer import DEFAULT_MONITORING_NAMESPACE, DEFAULT_OPTIMUSDB_URL
 
 
 def test_deploy_shows_manifest_name_variables_and_resources():
@@ -29,7 +29,7 @@ def test_deploy_shows_manifest_name_variables_and_resources():
                     "kind": "ConfigMap",
                     "name": "tosca-model-configmap",
                     "apiVersion": "v1",
-                    "namespace": "default",
+                    "namespace": DEFAULT_MONITORING_NAMESPACE,
                 }
             ],
             [
@@ -37,7 +37,7 @@ def test_deploy_shows_manifest_name_variables_and_resources():
                     "kind": "ConfigMap",
                     "name": "emsconfig",
                     "apiVersion": "v1",
-                    "namespace": "default",
+                    "namespace": DEFAULT_MONITORING_NAMESPACE,
                 }
             ],
             [
@@ -45,7 +45,7 @@ def test_deploy_shows_manifest_name_variables_and_resources():
                     "kind": "Deployment",
                     "name": "demo",
                     "apiVersion": "apps/v1",
-                    "namespace": "default",
+                    "namespace": DEFAULT_MONITORING_NAMESPACE,
                 }
             ],
         ]
@@ -57,12 +57,21 @@ def test_deploy_shows_manifest_name_variables_and_resources():
     printed = output.getvalue()
 
     assert exit_code == 0
-    mock_upload_sat_to_kb.assert_called_once()
+    if deploy.UPLOAD_KB:
+        mock_upload_sat_to_kb.assert_called_once()
+    else:
+        mock_upload_sat_to_kb.assert_not_called()
     mock_deployer.deploy_manifest.assert_has_calls(
         [
-            call("/tmp/tosca-model-configmap.yaml"),
-            call("/tmp/rendered.yaml"),
-            call("./manifests/ems+netdata-k3s_parametric.yaml"),
+            call(
+                "/tmp/tosca-model-configmap.yaml",
+                namespace=DEFAULT_MONITORING_NAMESPACE,
+            ),
+            call("/tmp/rendered.yaml", namespace=DEFAULT_MONITORING_NAMESPACE),
+            call(
+                "./manifests/ems+netdata-k3s_parametric.yaml",
+                namespace=DEFAULT_MONITORING_NAMESPACE,
+            ),
         ]
     )
     assert f"Deploying ConfigMap/tosca-model-configmap from SAT file {deploy.SAT_FILE} ..." in printed
@@ -72,9 +81,12 @@ def test_deploy_shows_manifest_name_variables_and_resources():
     assert f"    • use_kb: {deploy.USE_KB}" in printed
     assert f"    • upload_kb: {deploy.UPLOAD_KB}" in printed
     assert "Created or patched resources:" in printed
-    assert "ConfigMap/tosca-model-configmap (apiVersion=v1, namespace=default)" in printed
-    assert "ConfigMap/emsconfig (apiVersion=v1, namespace=default)" in printed
-    assert "Deployment/demo (apiVersion=apps/v1, namespace=default)" in printed
+    assert (
+        f"ConfigMap/tosca-model-configmap (apiVersion=v1, namespace={DEFAULT_MONITORING_NAMESPACE})"
+        in printed
+    )
+    assert f"ConfigMap/emsconfig (apiVersion=v1, namespace={DEFAULT_MONITORING_NAMESPACE})" in printed
+    assert f"Deployment/demo (apiVersion=apps/v1, namespace={DEFAULT_MONITORING_NAMESPACE})" in printed
 
 
 def test_deploy_skips_kb_upload_when_use_kb_is_false():

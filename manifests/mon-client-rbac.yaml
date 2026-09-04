@@ -2,14 +2,14 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: mon-client
-  namespace: default
+  namespace: swarm-system
 ---
 # --- Required for node="local": get pods in the SA namespace ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: mon-client-pod-reader
-  namespace: default
+  namespace: swarm-system
 rules:
   - apiGroups: [""]
     resources: ["pods"]
@@ -19,7 +19,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: mon-client-pod-reader
-  namespace: default
+  namespace: swarm-system
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
@@ -27,7 +27,7 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: mon-client
-    namespace: default
+    namespace: swarm-system
 ---
 # --- Required for node="all" and node="local": get,list nodes cluster-wide ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -50,7 +50,7 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: mon-client
-    namespace: default
+    namespace: swarm-system
 ---
 # --- Required for deploy_monitoring(...) / undeploy_monitoring(...) ---
 # Covers every resource kind defined in emsconfig.yaml and
@@ -90,4 +90,4 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: mon-client
-    namespace: default
+    namespace: swarm-system
