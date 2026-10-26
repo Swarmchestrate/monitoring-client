@@ -17,7 +17,7 @@ This guide walks through deploying a two-node k3s cluster, preparing a service a
   - [3.1 Install the library](#31-install-the-library)
   - [3.2 API overview](#32-api-overview)
   - [3.3 Deploy the monitoring stack](#33-deploy-the-monitoring-stack)
-  - [3.4 Gather SLO or Composite metrics (EPM)](#34-gather-slo-or-composite-metrics-epm)
+  - [3.4 Gather Composite metrics and SLO violations (EPM)](#34-gather-composite-metrics-and-slo-violations-epm)
   - [3.5 Gather raw metrics directly from node IPs (EPA)](#35-gather-raw-metrics-directly-from-node-ips-epa)
   - [3.6 Undeploy the monitoring stack](#36-undeploy-the-monitoring-stack)
 - [Appendix: Namespace-parametric RBAC](#appendix-namespace-parametric-rbac)
@@ -284,6 +284,32 @@ unsubscribe_metric(metric: str) -> None
 
 `query_metric_values(...)` returns and consumes the latest buffered sample for the metric as `[{"timestamp": ..., "value": ...}]`. `unsubscribe_metric(...)` stops the subscription.
 
+#### `subscribe_slo(...)`
+
+```python
+subscribe_slo(
+    slo_name: str,
+    cache_size: int | None = None,
+    on_violation: Callable[[dict[str, Any]], None] | None = None,
+) -> str
+query_slo_violations(slo_name: str) -> list[dict[str, Any]]
+unsubscribe_slo(slo_name: str) -> None
+```
+
+EMS reports an SLO violation by publishing an event on the `<slo_name>_CONSTRAINT`
+topic, e.g. `{"level":3,"metricValue":4.497942,"timestamp":1792795789558}`.
+`subscribe_slo(...)` listens on that topic through the same shared EPM listener as
+`subscribe_metric(...)`.
+
+| Parameter | Required | Type | Description |
+| --- | --- | --- | --- |
+| `slo_name` | Yes | `str` | SLO name as defined in the SAT `slo-constraints` (e.g. `high_cpu`). `high_cpu_CONSTRAINT` and `/topic/high_cpu_CONSTRAINT` are accepted too. |
+| `cache_size` | No | `int \| None` | Maximum number of buffered violations for this SLO; older ones are dropped first. Defaults to `1000`. |
+| `on_violation` | No | `Callable[[dict], None] \| None` | Called with each violation dict as it arrives. Runs on the listener thread, so keep it short; exceptions are logged and ignored. |
+
+`query_slo_violations(...)` returns and consumes every buffered violation, oldest
+first. `unsubscribe_slo(...)` stops the subscription.
+
 #### `subscribe_metric_raw(...)`
 
 ```python
@@ -456,7 +482,7 @@ swarm-system  netdata-child-qr48g                       1/1     Running     0   
 ...
 ```
 
-### 3.4 Gather SLO or Composite metrics (EPM)
+### 3.4 Gather Composite metrics and SLO violations (EPM)
 
 Run the example:
 
@@ -502,6 +528,38 @@ values = query_metric_values("cpu_util_prct")
 print(values)
 # Unsubscribe from the metric
 unsubscribe_metric("cpu_util_prct")
+```
+
+#### SLO violations
+
+SLO violations are events, not metric values: EMS publishes one on the
+`<slo_name>_CONSTRAINT` topic each time the SLO is violated. Use the SLO name from
+the SAT `slo-constraints` section, not the metric name.
+
+Run the example:
+
+```bash
+python examples/subscribe_slo.py
+```
+
+Or use the API directly:
+
+```python
+from swchmonclient import query_slo_violations, subscribe_slo, unsubscribe_slo
+
+subscribe_slo("cpu_utilization")  # listens on /topic/cpu_utilization_CONSTRAINT
+
+# Later: every violation since the last query, oldest first
+for violation in query_slo_violations("cpu_utilization"):
+    print(violation["level"], violation["metric_value"], violation["timestamp"])
+
+unsubscribe_slo("cpu_utilization")
+```
+
+To react immediately instead of polling, pass a callback:
+
+```python
+subscribe_slo("cpu_utilization", on_violation=lambda v: print("SLO violated:", v))
 ```
 
 ### 3.5 Gather raw metrics directly from node IPs (EPA)

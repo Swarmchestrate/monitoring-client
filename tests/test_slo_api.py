@@ -1,0 +1,251 @@
+import json
+import time
+
+import pytest
+
+from swchmonclient import (
+    query_metric_values,
+    query_slo_violations,
+    subscribe_metric,
+    subscribe_metric_raw,
+    subscribe_slo,
+    unsubscribe_metric,
+    unsubscribe_slo,
+)
+from swchmonclient.exceptions import MetricSubscriptionError
+from swchmonclient.metrics import _default_metric_subscription_manager
+
+
+class FakeFrame:
+    def __init__(self, body, destination):
+        self.body = body
+        self.headers = {"destination": destination}
+
+
+class FakeConnection:
+    """Emits two SLO violations on ``*_CONSTRAINT`` topics and one sample elsewhere."""
+
+    def __init__(self):
+        self.connected = False
+        self.disconnected = False
+        self.listener = None
+        self.subscribe_calls = []
+        self.unsubscribe_calls = []
+
+    def set_listener(self, name, listener):
+        self.listener = listener
+
+    def connect(self, login="", passcode="", wait=True):
+        self.connected = True
+
+    def subscribe(self, destination, id, ack):
+        if destination.endswith("_CONSTRAINT"):
+            payloads = [
+                {"level": 3, "metricValue": 8.32034, "timestamp": 1792749239512},
+                {"level": 2, "metricValue": 4.497942, "timestamp": 1792795789558},
+            ]
+        else:
+            payloads = [{"metricValue": 12.5, "timestamp": int(time.time() * 1000)}]
+        for payload in payloads:
+            self.listener.on_message(FakeFrame(json.dumps(payload), destination))
+        # Recorded last so tests waiting on subscribe_calls also see the emitted messages.
+        self.subscribe_calls.append((destination, id, ack))
+
+    def emit(self, body, destination):
+        self.listener.on_message(FakeFrame(body, destination))
+
+    def unsubscribe(self, id):
+        self.unsubscribe_calls.append(id)
+
+    def is_connected(self):
+        return self.connected and not self.disconnected
+
+    def disconnect(self):
+        self.disconnected = True
+        self.connected = False
+
+
+@pytest.fixture
+def created(monkeypatch):
+    connections = []
+
+    def fake_connection_factory(host, port):
+        connection = FakeConnection()
+        connections.append(connection)
+        return connection
+
+    monkeypatch.setattr(
+        "swchmonclient.listener.create_stomp_connection",
+        fake_connection_factory,
+    )
+    return connections
+
+
+@pytest.fixture(autouse=True)
+def cleanup_subscriptions():
+    yield
+    for subscription in list(_default_metric_subscription_manager._slo_subscriptions.values()):
+        unsubscribe_slo(subscription.slo_name)
+    for metric in list(_default_metric_subscription_manager._subscriptions):
+        unsubscribe_metric(metric)
+
+
+def wait_for_subscribe_calls(created, count):
+    deadline = time.time() + 2.0
+    while time.time() < deadline:
+        if created and len(created[0].subscribe_calls) >= count:
+            return
+        time.sleep(0.01)
+    raise AssertionError(f"expected {count} subscribe calls")
+
+
+def test_subscribe_slo_buffers_all_violations(created):
+    thread_name = subscribe_slo("high_cpu")
+    wait_for_subscribe_calls(created, 1)
+
+    assert thread_name == "metric-listener"
+    assert created[0].subscribe_calls == [("/topic/high_cpu_CONSTRAINT", 1, "auto")]
+    assert query_slo_violations("high_cpu") == [
+        {
+            "slo": "high_cpu",
+            "metric_value": 8.32034,
+            "level": 3,
+            "timestamp": 1792749239.512,
+            "payload": {"level": 3, "metricValue": 8.32034, "timestamp": 1792749239512},
+        },
+        {
+            "slo": "high_cpu",
+            "metric_value": 4.497942,
+            "level": 2,
+            "timestamp": 1792795789.558,
+            "payload": {"level": 2, "metricValue": 4.497942, "timestamp": 1792795789558},
+        },
+    ]
+    assert query_slo_violations("high_cpu") == []
+
+
+@pytest.mark.parametrize(
+    "slo_name",
+    ["high_cpu", " high_cpu ", "high_cpu_CONSTRAINT", "/topic/high_cpu_CONSTRAINT"],
+)
+def test_subscribe_slo_normalizes_name_to_constraint_topic(created, slo_name):
+    subscribe_slo(slo_name)
+    wait_for_subscribe_calls(created, 1)
+
+    assert created[0].subscribe_calls == [("/topic/high_cpu_CONSTRAINT", 1, "auto")]
+    assert len(query_slo_violations("high_cpu")) == 2
+
+
+@pytest.mark.parametrize("slo_name", ["", "   ", "_CONSTRAINT", "/queue/high_cpu"])
+def test_subscribe_slo_rejects_invalid_names(slo_name):
+    with pytest.raises(ValueError):
+        subscribe_slo(slo_name)
+
+
+def test_subscribe_slo_keeps_extra_payload_fields_and_non_json_bodies(created):
+    subscribe_slo("high_cpu")
+    wait_for_subscribe_calls(created, 1)
+    query_slo_violations("high_cpu")
+
+    created[0].emit(
+        json.dumps({"level": 1, "metricValue": 90.0, "timestamp": 1792795789558, "zone": "a"}),
+        "/topic/high_cpu_CONSTRAINT",
+    )
+    created[0].emit("not-json", "/topic/high_cpu_CONSTRAINT")
+
+    violations = query_slo_violations("high_cpu")
+    assert violations[0]["payload"]["zone"] == "a"
+    assert violations[1]["metric_value"] == "not-json"
+    assert violations[1]["level"] is None
+
+
+def test_subscribe_slo_uses_custom_cache_size(created):
+    subscribe_slo("high_cpu", cache_size=1)
+    wait_for_subscribe_calls(created, 1)
+
+    assert [violation["level"] for violation in query_slo_violations("high_cpu")] == [2]
+
+
+def test_subscribe_slo_rejects_non_positive_cache_size():
+    with pytest.raises(ValueError, match="cache_size"):
+        subscribe_slo("high_cpu", cache_size=0)
+
+
+def test_subscribe_slo_invokes_callback_and_survives_callback_errors(created):
+    received = []
+
+    def on_violation(violation):
+        received.append(violation)
+        raise RuntimeError("boom")
+
+    subscribe_slo("high_cpu", on_violation=on_violation)
+    wait_for_subscribe_calls(created, 1)
+
+    assert [violation["level"] for violation in received] == [3, 2]
+    assert [violation["level"] for violation in query_slo_violations("high_cpu")] == [3, 2]
+
+
+def test_subscribe_slo_shares_listener_with_metrics(created):
+    subscribe_metric("cpu_util_prct")
+    subscribe_slo("high_cpu")
+    wait_for_subscribe_calls(created, 2)
+
+    assert len(created) == 1
+    assert created[0].subscribe_calls == [
+        ("/topic/cpu_util_prct", 1, "auto"),
+        ("/topic/high_cpu_CONSTRAINT", 2, "auto"),
+    ]
+    assert [sample["value"] for sample in query_metric_values("cpu_util_prct")] == [12.5]
+    assert len(query_slo_violations("high_cpu")) == 2
+
+    unsubscribe_metric("cpu_util_prct")
+    deadline = time.time() + 2.0
+    while time.time() < deadline and not created[0].unsubscribe_calls:
+        time.sleep(0.01)
+
+    assert created[0].unsubscribe_calls == [1]
+    assert created[0].disconnected is False
+
+    unsubscribe_slo("high_cpu")
+
+    assert created[0].disconnected is True
+    with pytest.raises(MetricSubscriptionError, match="not subscribed"):
+        query_slo_violations("high_cpu")
+
+
+def test_unsubscribe_slo_keeps_listener_for_remaining_metric(created):
+    subscribe_slo("high_cpu")
+    subscribe_metric("cpu_util_prct")
+    wait_for_subscribe_calls(created, 2)
+
+    unsubscribe_slo("high_cpu")
+    deadline = time.time() + 2.0
+    while time.time() < deadline and not created[0].unsubscribe_calls:
+        time.sleep(0.01)
+
+    assert created[0].unsubscribe_calls == [1]
+    assert created[0].disconnected is False
+    assert [sample["value"] for sample in query_metric_values("cpu_util_prct")] == [12.5]
+
+
+def test_subscribe_slo_rejects_topic_already_subscribed_as_metric(created):
+    subscribe_metric("high_cpu_CONSTRAINT")
+
+    with pytest.raises(MetricSubscriptionError, match="already subscribed as a metric"):
+        subscribe_slo("high_cpu")
+
+
+def test_subscribe_metric_rejects_topic_already_subscribed_as_slo(created):
+    subscribe_slo("high_cpu")
+
+    with pytest.raises(MetricSubscriptionError, match="already subscribed as an SLO"):
+        subscribe_metric("high_cpu_CONSTRAINT")
+    with pytest.raises(MetricSubscriptionError, match="already subscribed as an SLO"):
+        subscribe_metric_raw("high_cpu_CONSTRAINT", ["10.0.0.1"])
+
+
+def test_query_and_unsubscribe_unknown_slo_raise():
+    with pytest.raises(MetricSubscriptionError, match="not subscribed"):
+        query_slo_violations("high_cpu")
+    with pytest.raises(MetricSubscriptionError, match="not subscribed"):
+        unsubscribe_slo("high_cpu")

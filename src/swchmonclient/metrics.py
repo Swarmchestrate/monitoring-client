@@ -8,7 +8,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from ipaddress import ip_address
 from pathlib import Path
-from typing import Any, Deque
+from typing import Any, Callable, Deque
 
 from .deployer import get_current_vm_private_ip, get_vm_private_ips
 from .exceptions import MetricSubscriptionError, ThreadManagementError
@@ -25,6 +25,9 @@ RAW_FILE_THREAD_NAME_PREFIX = "metric-raw-file"
 RAW_FILE_CLUSTER_RECONCILER_THREAD_NAME = "metric-raw-file-cluster-reconciler"
 RAW_FILE_CLUSTER_REFRESH_SECONDS = 30.0
 RAW_METRIC_FILE_SCHEMA_VERSION = 1
+SLO_MAX_VIOLATIONS_PER_SLO = 1000
+SLO_TOPIC_PREFIX = "/topic/"
+SLO_TOPIC_SUFFIX = "_CONSTRAINT"
 
 
 @dataclass
@@ -41,6 +44,22 @@ class _MetricSubscription:
         default_factory=lambda: deque(maxlen=MAX_SAMPLES_PER_METRIC)
     )
     blocked_nodes: set[str] = field(default_factory=set)
+
+
+@dataclass
+class _SloViolation:
+    timestamp: float
+    metric_value: Any
+    level: Any
+    payload: Any
+
+
+@dataclass
+class _SloSubscription:
+    slo_name: str
+    thread_name: str
+    violations: Deque[_SloViolation]
+    on_violation: Callable[[dict[str, Any]], None] | None = None
 
 
 @dataclass
@@ -143,6 +162,25 @@ def _parse_metric_payload(
     return payload, time.time(), _extract_node(headers)
 
 
+def _parse_slo_violation_payload(body: Any) -> _SloViolation:
+    payload = _deserialize_metric_payload(body)
+
+    if isinstance(payload, dict):
+        return _SloViolation(
+            timestamp=_normalize_timestamp(payload.get("timestamp")),
+            metric_value=payload.get("metricValue"),
+            level=payload.get("level"),
+            payload=payload,
+        )
+
+    return _SloViolation(
+        timestamp=time.time(),
+        metric_value=payload,
+        level=None,
+        payload=payload,
+    )
+
+
 class MetricSubscriptionManager:
     """Manage standard and raw metric listener threads plus in-memory sample buffers."""
 
@@ -153,6 +191,7 @@ class MetricSubscriptionManager:
         self._raw_metric_nodes: dict[str, set[str]] = {}
         self._file_cluster_mappings: dict[str, dict[str, str]] = {}
         self._cluster_file_subscriptions: dict[str, _ClusterFileSubscription] = {}
+        self._slo_subscriptions: dict[str, _SloSubscription] = {}
         self._lock = threading.Lock()
 
     def subscribe_metric(self, metric: str) -> str:
@@ -162,6 +201,10 @@ class MetricSubscriptionManager:
             if destination in self._raw_metric_nodes:
                 raise MetricSubscriptionError(
                     f"Metric '{metric}' is already subscribed in raw mode"
+                )
+            if destination in self._slo_subscriptions:
+                raise MetricSubscriptionError(
+                    f"Metric '{metric}' is already subscribed as an SLO"
                 )
             existing = self._subscriptions.get(destination)
             if existing is not None:
@@ -180,20 +223,56 @@ class MetricSubscriptionManager:
         if not should_start_listener:
             return LISTENER_THREAD_NAME
 
-        self._clear_stale_listener_thread(LISTENER_THREAD_NAME)
-        listener = CallbackStompListener(self._build_metric_handler())
-
         try:
-            return self._thread_manager.start_listener_thread(
-                name=LISTENER_THREAD_NAME,
-                destinations_provider=self.get_destinations,
-                listener=listener,
-            )
+            return self._start_shared_listener()
         except ThreadManagementError as error:
             with self._lock:
                 self._subscriptions.pop(destination, None)
             raise MetricSubscriptionError(
                 f"Failed to subscribe to metric '{metric}': {error}"
+            ) from error
+
+    def subscribe_slo(
+        self,
+        slo_name: str,
+        cache_size: int | None = None,
+        on_violation: Callable[[dict[str, Any]], None] | None = None,
+    ) -> str:
+        resolved_slo_name, destination = self._normalize_slo(slo_name)
+        resolved_cache_size = self._resolve_slo_cache_size(cache_size)
+
+        with self._lock:
+            if destination in self._subscriptions or destination in self._raw_metric_nodes:
+                raise MetricSubscriptionError(
+                    f"Topic '{destination}' is already subscribed as a metric"
+                )
+            existing = self._slo_subscriptions.get(destination)
+            if existing is not None:
+                if self._thread_manager.list_threads().get(existing.thread_name, False):
+                    return existing.thread_name
+                self._slo_subscriptions.pop(destination, None)
+
+            self._slo_subscriptions[destination] = _SloSubscription(
+                slo_name=resolved_slo_name,
+                thread_name=LISTENER_THREAD_NAME,
+                violations=deque(maxlen=resolved_cache_size),
+                on_violation=on_violation,
+            )
+            should_start_listener = not self._thread_manager.list_threads().get(
+                LISTENER_THREAD_NAME,
+                False,
+            )
+
+        if not should_start_listener:
+            return LISTENER_THREAD_NAME
+
+        try:
+            return self._start_shared_listener()
+        except ThreadManagementError as error:
+            with self._lock:
+                self._slo_subscriptions.pop(destination, None)
+            raise MetricSubscriptionError(
+                f"Failed to subscribe to SLO '{resolved_slo_name}': {error}"
             ) from error
 
     def subscribe_metric_raw(
@@ -268,6 +347,10 @@ class MetricSubscriptionManager:
             if destination in self._subscriptions:
                 raise MetricSubscriptionError(
                     f"Metric '{metric}' is already subscribed in standard mode"
+                )
+            if destination in self._slo_subscriptions:
+                raise MetricSubscriptionError(
+                    f"Metric '{metric}' is already subscribed as an SLO"
                 )
             for current_node in normalized_nodes:
                 existing_node = self._raw_node_subscriptions.get(current_node)
@@ -419,6 +502,20 @@ class MetricSubscriptionManager:
             for sample in matching_samples
         ]
 
+    def query_slo_violations(self, slo_name: str) -> list[dict[str, Any]]:
+        resolved_slo_name, destination = self._normalize_slo(slo_name)
+        with self._lock:
+            subscription = self._slo_subscriptions.get(destination)
+            if subscription is None:
+                raise MetricSubscriptionError(f"SLO '{resolved_slo_name}' is not subscribed")
+            violations = list(subscription.violations)
+            subscription.violations.clear()
+
+        return [
+            self._serialize_slo_violation(resolved_slo_name, violation)
+            for violation in violations
+        ]
+
     def query_metric_values_raw(
         self,
         metric: str,
@@ -448,7 +545,9 @@ class MetricSubscriptionManager:
             if subscription is None:
                 raise MetricSubscriptionError(f"Metric '{metric}' is not subscribed")
             thread_name = subscription.thread_name
-            should_stop_listener = len(self._subscriptions) == 1
+            should_stop_listener = (
+                len(self._subscriptions) == 1 and not self._slo_subscriptions
+            )
             removed_subscription = self._subscriptions.pop(destination)
 
         if not should_stop_listener:
@@ -463,9 +562,34 @@ class MetricSubscriptionManager:
                 f"Failed to unsubscribe from metric '{metric}': {error}"
             ) from error
 
+    def unsubscribe_slo(self, slo_name: str) -> None:
+        resolved_slo_name, destination = self._normalize_slo(slo_name)
+
+        with self._lock:
+            subscription = self._slo_subscriptions.get(destination)
+            if subscription is None:
+                raise MetricSubscriptionError(f"SLO '{resolved_slo_name}' is not subscribed")
+            thread_name = subscription.thread_name
+            should_stop_listener = (
+                len(self._slo_subscriptions) == 1 and not self._subscriptions
+            )
+            removed_subscription = self._slo_subscriptions.pop(destination)
+
+        if not should_stop_listener:
+            return
+
+        try:
+            self._thread_manager.stop_listener_thread(thread_name)
+        except ThreadManagementError as error:
+            with self._lock:
+                self._slo_subscriptions[destination] = removed_subscription
+            raise MetricSubscriptionError(
+                f"Failed to unsubscribe from SLO '{resolved_slo_name}': {error}"
+            ) from error
+
     def get_destinations(self) -> set[str]:
         with self._lock:
-            return set(self._subscriptions)
+            return set(self._subscriptions) | set(self._slo_subscriptions)
 
     def get_raw_destinations(self, node: str) -> set[str]:
         with self._lock:
@@ -528,11 +652,44 @@ class MetricSubscriptionManager:
             ]
             subscription.samples = deque(filtered_samples, maxlen=MAX_SAMPLES_PER_METRIC)
 
+    def _start_shared_listener(self) -> str:
+        self._clear_stale_listener_thread(LISTENER_THREAD_NAME)
+        listener = CallbackStompListener(self._build_metric_handler())
+        return self._thread_manager.start_listener_thread(
+            name=LISTENER_THREAD_NAME,
+            destinations_provider=self.get_destinations,
+            listener=listener,
+        )
+
+    def _handle_slo_message(self, destination: str, body: Any) -> None:
+        violation = _parse_slo_violation_payload(body)
+
+        with self._lock:
+            subscription = self._slo_subscriptions.get(destination)
+            if subscription is None:
+                return
+            subscription.violations.append(violation)
+            slo_name = subscription.slo_name
+            on_violation = subscription.on_violation
+
+        if on_violation is None:
+            return
+
+        try:
+            on_violation(self._serialize_slo_violation(slo_name, violation))
+        except Exception:
+            logger.exception("SLO violation callback for '%s' failed", slo_name)
+
     def _build_metric_handler(self):
         def handle_message(frame: object) -> None:
             body = getattr(frame, "body", frame)
             destination = self._extract_destination(frame)
             if destination is None:
+                return
+            with self._lock:
+                is_slo_destination = destination in self._slo_subscriptions
+            if is_slo_destination:
+                self._handle_slo_message(destination, body)
                 return
             value, timestamp, node = _parse_metric_payload(
                 body,
@@ -1233,6 +1390,40 @@ class MetricSubscriptionManager:
             raise ValueError("cache_size must be a positive integer")
         return cache_size
 
+    @staticmethod
+    def _resolve_slo_cache_size(cache_size: int | None) -> int:
+        if cache_size is None:
+            return SLO_MAX_VIOLATIONS_PER_SLO
+        if cache_size <= 0:
+            raise ValueError("cache_size must be a positive integer")
+        return cache_size
+
+    @staticmethod
+    def _normalize_slo(slo_name: str) -> tuple[str, str]:
+        """Return the bare SLO name and its ``/topic/<slo>_CONSTRAINT`` destination."""
+        if not isinstance(slo_name, str) or not slo_name.strip():
+            raise ValueError("slo_name must be a non-empty string")
+
+        resolved_slo_name = slo_name.strip()
+        if resolved_slo_name.startswith(SLO_TOPIC_PREFIX):
+            resolved_slo_name = resolved_slo_name[len(SLO_TOPIC_PREFIX):]
+        if resolved_slo_name.endswith(SLO_TOPIC_SUFFIX):
+            resolved_slo_name = resolved_slo_name[: -len(SLO_TOPIC_SUFFIX)]
+        if not resolved_slo_name or "/" in resolved_slo_name:
+            raise ValueError(f"Invalid SLO name '{slo_name}'")
+
+        return resolved_slo_name, f"{SLO_TOPIC_PREFIX}{resolved_slo_name}{SLO_TOPIC_SUFFIX}"
+
+    @staticmethod
+    def _serialize_slo_violation(slo_name: str, violation: _SloViolation) -> dict[str, Any]:
+        return {
+            "slo": slo_name,
+            "metric_value": violation.metric_value,
+            "level": violation.level,
+            "timestamp": violation.timestamp,
+            "payload": violation.payload,
+        }
+
     @classmethod
     def _extract_destination(cls, frame: object) -> str | None:
         headers = cls._extract_headers(frame)
@@ -1309,6 +1500,19 @@ def subscribe_metric_raw(
     )
 
 
+def subscribe_slo(
+    slo_name: str,
+    cache_size: int | None = None,
+    on_violation: Callable[[dict[str, Any]], None] | None = None,
+) -> str:
+    """Subscribe to violation events of ``slo_name`` on its ``<slo>_CONSTRAINT`` topic."""
+    return _default_metric_subscription_manager.subscribe_slo(
+        slo_name,
+        cache_size=cache_size,
+        on_violation=on_violation,
+    )
+
+
 def query_metric_values(metric: str) -> list[dict[str, Any]]:
     """Return and consume buffered ``{"timestamp", "value"}`` samples for ``metric``."""
     return _default_metric_subscription_manager.query_metric_values(metric)
@@ -1320,6 +1524,16 @@ def query_metric_values_raw(
 ) -> dict[str, list[dict[str, Any]]]:
     """Return and consume raw metric values received within the last ``seconds`` seconds."""
     return _default_metric_subscription_manager.query_metric_values_raw(metric, seconds)
+
+
+def query_slo_violations(slo_name: str) -> list[dict[str, Any]]:
+    """Return and consume all buffered violation events for ``slo_name``."""
+    return _default_metric_subscription_manager.query_slo_violations(slo_name)
+
+
+def unsubscribe_slo(slo_name: str) -> None:
+    """Stop receiving violation events for ``slo_name``."""
+    _default_metric_subscription_manager.unsubscribe_slo(slo_name)
 
 
 def unsubscribe_metric(metric: str, nodes: list[str] | None = None) -> None:

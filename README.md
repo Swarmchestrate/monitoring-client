@@ -19,7 +19,8 @@ uv add swchmonclient
 - `deploy_monitoring(...)` and `undeploy_monitoring(...)` manage the monitoring manifests from inside Kubernetes.
 - `subscribe_metric(...)` consumes standard metrics through a shared STOMP listener from EPM.
 - `subscribe_metric_raw(...)` consumes raw metrics directly from resolved node IPs EPA.
-- Metric values are buffered until `query_metric_values(...)` or `query_metric_values_raw(...)` is called.
+- `subscribe_slo(...)` consumes SLO violation events that EMS publishes on the `<slo_name>_CONSTRAINT` topic in EPM.
+- Metric values are buffered until `query_metric_values(...)` or `query_metric_values_raw(...)` is called; SLO violations until `query_slo_violations(...)` is called.
 - Returned samples are consumed from the in-memory buffers.
 
 > **Important:** `deploy_monitoring(...)` and `undeploy_monitoring(...)` use in-cluster Kubernetes configuration. Run them from a pod that has a mounted service account token and RBAC permission to create, patch, get, list, and delete the Kubernetes resources referenced by the monitoring manifests.
@@ -491,6 +492,25 @@ versioned JSON source file.
 - **Important:** In live mode, `node="all"` and `node="local"` use in-cluster Kubernetes API access.
 - **Important:** In live mode, `node="local"` needs `get pods` in the current namespace and `get,list nodes` cluster-wide.
 
+### `subscribe_slo(slo_name: str, cache_size: int | None = None, on_violation: Callable[[dict[str, Any]], None] | None = None) -> str`
+
+Subscribes to violation events of an SLO. EMS publishes each violation on the
+`<slo_name>_CONSTRAINT` topic as JSON such as
+`{"level":3,"metricValue":4.497942,"timestamp":1792795789558}`.
+
+| Parameter | Required | Type | Description |
+| --- | --- | --- | --- |
+| `slo_name` | Yes | `str` | SLO name as defined in the SAT `slo-constraints` (e.g. `high_cpu`). `high_cpu_CONSTRAINT` and `/topic/high_cpu_CONSTRAINT` are accepted too. |
+| `cache_size` | No | `int \| None` | Maximum number of buffered violations for this SLO; older ones are dropped first. Defaults to `1000`. |
+| `on_violation` | No | `Callable[[dict], None] \| None` | Called with each violation dict as it arrives. Runs on the listener thread, so keep it short; exceptions are logged and ignored. |
+
+**Output:** `str` thread name of the shared listener, currently `metric-listener`.
+
+**Notes:**
+- SLO and standard metric subscriptions share one EPM listener and connection.
+- Unlike standard metrics, which keep only the latest value, every violation is kept until queried (up to `cache_size`).
+- A topic cannot be subscribed both as an SLO and with `subscribe_metric(...)` / `subscribe_metric_raw(...)`.
+
 ### `query_metric_values(metric: str) -> list[dict[str, Any]]`
 
 Returns the currently buffered sample for the metric and consumes it. Only the latest received sample is buffered, so the list holds at most one entry, and it is empty when no new sample arrived since the previous query. Each entry has the same shape as the entries of `query_metric_values_raw(...)`; `timestamp` is a Unix timestamp in seconds.
@@ -526,6 +546,29 @@ Returns buffered raw metric values received within the last `seconds` seconds an
 }
 ```
 
+### `query_slo_violations(slo_name: str) -> list[dict[str, Any]]`
+
+Returns all buffered violations for the SLO, oldest first, and consumes them.
+`payload` holds the full decoded message, including any extra fields EMS sends.
+
+**Output:**
+
+```python
+[
+    {
+        "slo": "high_cpu",
+        "metric_value": 4.497942,
+        "level": 3,
+        "timestamp": 1792795789.558,  # seconds; EMS sends milliseconds
+        "payload": {"level": 3, "metricValue": 4.497942, "timestamp": 1792795789558},
+    },
+]
+```
+
+### `unsubscribe_slo(slo_name: str) -> None`
+
+Stops receiving violations for the SLO. The shared listener stops once no SLO or standard metric subscription remains.
+
 ### `unsubscribe_metric(metric: str, nodes: list[str] | None = None) -> None`
 
 Stops metric listeners or removes node-specific subscriptions, depending on the subscription mode.
@@ -551,6 +594,7 @@ Runnable examples are available under `examples/`:
 - `examples/undeploy.py`
 - `examples/subscribe_metric.py`
 - `examples/subscribe_metric_raw.py`
+- `examples/subscribe_slo.py`
 
 ## Simple Snippets
 
@@ -584,6 +628,16 @@ from swchmonclient import subscribe_metric
 
 thread_name = subscribe_metric("cpu_util_instance")
 print(thread_name)
+```
+
+### `subscribe_slo`
+
+```python
+from swchmonclient import query_slo_violations, subscribe_slo
+
+subscribe_slo("high_cpu")  # listens on /topic/high_cpu_CONSTRAINT
+for violation in query_slo_violations("high_cpu"):
+    print(violation["level"], violation["metric_value"], violation["timestamp"])
 ```
 
 ### `subscribe_metric_raw`
