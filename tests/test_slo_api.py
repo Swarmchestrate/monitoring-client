@@ -1,4 +1,5 @@
 import json
+import threading
 import time
 
 import pytest
@@ -249,3 +250,95 @@ def test_query_and_unsubscribe_unknown_slo_raise():
         query_slo_violations("high_cpu")
     with pytest.raises(MetricSubscriptionError, match="not subscribed"):
         unsubscribe_slo("high_cpu")
+
+
+def test_resubscribe_slo_applies_new_settings_and_keeps_buffer(created):
+    received = []
+    subscribe_slo("high_cpu")
+    wait_for_subscribe_calls(created, 1)
+
+    subscribe_slo("high_cpu", cache_size=1, on_violation=received.append)
+    created[0].emit(
+        json.dumps({"level": 1, "metricValue": 90.0, "timestamp": 1792795789558}),
+        "/topic/high_cpu_CONSTRAINT",
+    )
+
+    assert [violation["level"] for violation in received] == [1]
+    assert [violation["level"] for violation in query_slo_violations("high_cpu")] == [1]
+
+
+def test_resubscribe_slo_without_arguments_keeps_existing_settings(created):
+    received = []
+    subscribe_slo("high_cpu", cache_size=1, on_violation=received.append)
+    wait_for_subscribe_calls(created, 1)
+
+    subscribe_slo("high_cpu")
+
+    assert [violation["level"] for violation in query_slo_violations("high_cpu")] == [2]
+    assert [violation["level"] for violation in received] == [3, 2]
+
+
+@pytest.mark.parametrize(
+    ("subscribe", "query"),
+    [
+        (lambda: subscribe_slo("high_cpu"), lambda: query_slo_violations("high_cpu")),
+        (lambda: subscribe_metric("cpu_util_prct"), lambda: query_metric_values("cpu_util_prct")),
+    ],
+)
+def test_subscribe_rolls_back_when_stale_listener_cannot_be_cleared(
+    monkeypatch,
+    subscribe,
+    query,
+):
+    def fail_clear(thread_name):
+        raise MetricSubscriptionError(f"Failed to restart listener '{thread_name}'")
+
+    monkeypatch.setattr(
+        _default_metric_subscription_manager,
+        "_clear_stale_listener_thread",
+        fail_clear,
+    )
+
+    with pytest.raises(MetricSubscriptionError, match="Failed to restart listener"):
+        subscribe()
+    with pytest.raises(MetricSubscriptionError, match="not subscribed"):
+        query()
+
+
+def test_subscribe_during_last_unsubscribe_restarts_listener(created, monkeypatch):
+    manager = _default_metric_subscription_manager
+    subscribe_metric("cpu_util_prct")
+    wait_for_subscribe_calls(created, 1)
+
+    stopping = threading.Event()
+    release = threading.Event()
+    original_stop = manager._thread_manager.stop_listener_thread
+
+    def slow_stop(name, *args, **kwargs):
+        stopping.set()
+        release.wait(2.0)
+        return original_stop(name, *args, **kwargs)
+
+    monkeypatch.setattr(manager._thread_manager, "stop_listener_thread", slow_stop)
+
+    unsubscriber = threading.Thread(target=unsubscribe_metric, args=("cpu_util_prct",))
+    unsubscriber.start()
+    assert stopping.wait(2.0)
+
+    subscriber = threading.Thread(target=subscribe_slo, args=("high_cpu",))
+    subscriber.start()
+    subscriber.join(0.2)
+    assert subscriber.is_alive(), "subscribe must wait while the listener is being stopped"
+
+    release.set()
+    unsubscriber.join(2.0)
+    subscriber.join(2.0)
+
+    deadline = time.time() + 2.0
+    while time.time() < deadline and len(created) < 2:
+        time.sleep(0.01)
+
+    assert manager._thread_manager.list_threads().get("metric-listener") is True
+    assert created[0].disconnected is True
+    wait_for_subscribe_calls(created[1:], 1)
+    assert created[1].subscribe_calls == [("/topic/high_cpu_CONSTRAINT", 1, "auto")]

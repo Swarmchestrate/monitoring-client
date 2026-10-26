@@ -509,6 +509,7 @@ Subscribes to violation events of an SLO. EMS publishes each violation on the
 **Notes:**
 - SLO and standard metric subscriptions share one EPM listener and connection.
 - Unlike standard metrics, which keep only the latest value, every violation is kept until queried (up to `cache_size`).
+- Calling `subscribe_slo(...)` again for a subscribed SLO applies any `cache_size` / `on_violation` passed explicitly and keeps the buffered violations; omitted arguments keep their current values.
 - A topic cannot be subscribed both as an SLO and with `subscribe_metric(...)` / `subscribe_metric_raw(...)`.
 
 ### `query_metric_values(metric: str) -> list[dict[str, Any]]`
