@@ -32,7 +32,7 @@ def main() -> int:
         while not stopping:
             values = query_metric_values(METRIC_NAME)
             logging.info(
-                "Latest buffered value for %s: %s",
+                "Latest buffered sample for %s: %s",
                 METRIC_NAME,
                 values,
             )

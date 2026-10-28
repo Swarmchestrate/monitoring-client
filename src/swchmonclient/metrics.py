@@ -405,7 +405,7 @@ class MetricSubscriptionManager:
     def query_metric_values(
         self,
         metric: str,
-    ) -> list[Any]:
+    ) -> list[dict[str, Any]]:
         destination = self._normalize_metric(metric)
         with self._lock:
             subscription = self._subscriptions.get(destination)
@@ -414,7 +414,10 @@ class MetricSubscriptionManager:
             matching_samples = list(subscription.samples)
             subscription.samples = deque(maxlen=MAX_SAMPLES_PER_METRIC)
 
-        return [sample.value for sample in matching_samples]
+        return [
+            {"timestamp": sample.timestamp, "value": sample.value}
+            for sample in matching_samples
+        ]
 
     def query_metric_values_raw(
         self,
@@ -1306,8 +1309,8 @@ def subscribe_metric_raw(
     )
 
 
-def query_metric_values(metric: str) -> list[Any]:
-    """Return and consume all buffered metric values for ``metric``."""
+def query_metric_values(metric: str) -> list[dict[str, Any]]:
+    """Return and consume buffered ``{"timestamp", "value"}`` samples for ``metric``."""
     return _default_metric_subscription_manager.query_metric_values(metric)
 
 

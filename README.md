@@ -491,9 +491,9 @@ versioned JSON source file.
 - **Important:** In live mode, `node="all"` and `node="local"` use in-cluster Kubernetes API access.
 - **Important:** In live mode, `node="local"` needs `get pods` in the current namespace and `get,list nodes` cluster-wide.
 
-### `query_metric_values(metric: str) -> list[Any]`
+### `query_metric_values(metric: str) -> list[dict[str, Any]]`
 
-Returns all currently buffered metric values for the metric and consumes those returned samples.
+Returns the currently buffered sample for the metric and consumes it. Only the latest received sample is buffered, so the list holds at most one entry, and it is empty when no new sample arrived since the previous query. Each entry has the same shape as the entries of `query_metric_values_raw(...)`; `timestamp` is a Unix timestamp in seconds.
 
 | Parameter | Required | Type | Description |
 | --- | --- | --- | --- |
@@ -502,7 +502,9 @@ Returns all currently buffered metric values for the metric and consumes those r
 **Output:**
 
 ```python
-[42.0, 41.7]
+[
+    {"timestamp": 1716712345.12, "value": 42.0},
+]
 ```
 
 ### `query_metric_values_raw(metric: str, seconds: int) -> dict[str, list[dict[str, Any]]]`

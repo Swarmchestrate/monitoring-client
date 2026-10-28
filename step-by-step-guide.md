@@ -272,7 +272,7 @@ How the SAT is resolved depends on `use_kb`:
 
 ```python
 subscribe_metric(metric: str) -> str
-query_metric_values(metric: str) -> list[Any]
+query_metric_values(metric: str) -> list[dict[str, Any]]
 unsubscribe_metric(metric: str) -> None
 ```
 
@@ -282,7 +282,7 @@ unsubscribe_metric(metric: str) -> None
 | --- | --- | --- | --- |
 | `metric` | Yes | `str` | Metric name or full topic destination. |
 
-`query_metric_values(...)` returns and consumes buffered values for the metric. `unsubscribe_metric(...)` stops the subscription.
+`query_metric_values(...)` returns and consumes the latest buffered sample for the metric as `[{"timestamp": ..., "value": ...}]`. `unsubscribe_metric(...)` stops the subscription.
 
 #### `subscribe_metric_raw(...)`
 
@@ -469,15 +469,15 @@ Sample output:
 ```
 2026-07-01 12:38:58,128 INFO root: Subscribing to metric: cpu_util_prct
 2026-07-01 12:38:58,130 INFO swchmonclient.listener: Starting listener for [/topic/>] on emsserver-ems-server:61610
-2026-07-01 12:38:58,138 INFO root: Latest buffered value for cpu_util_prct: []
+2026-07-01 12:38:58,138 INFO root: Latest buffered sample for cpu_util_prct: []
 2026-07-01 12:38:58,144 INFO stomp.py: established connection to host emsserver-ems-server, port 61610
 2026-07-01 12:38:58,192 INFO swchmonclient.listener: Subscription created successfully
-2026-07-01 12:39:03,139 INFO root: Latest buffered value for cpu_util_prct: []
+2026-07-01 12:39:03,139 INFO root: Latest buffered sample for cpu_util_prct: []
 ...
-2026-07-01 12:39:23,144 INFO root: Latest buffered value for cpu_util_prct: [31.086818299999997]
-2026-07-01 12:39:28,144 INFO root: Latest buffered value for cpu_util_prct: []
+2026-07-01 12:39:23,144 INFO root: Latest buffered sample for cpu_util_prct: [{'timestamp': 1782909561.118, 'value': 31.086818299999997}]
+2026-07-01 12:39:28,144 INFO root: Latest buffered sample for cpu_util_prct: []
 ...
-2026-07-01 12:39:53,148 INFO root: Latest buffered value for cpu_util_prct: [30.95604507777778]
+2026-07-01 12:39:53,148 INFO root: Latest buffered sample for cpu_util_prct: [{'timestamp': 1782909591.118, 'value': 30.95604507777778}]
 ^C
 2026-07-01 12:39:55,389 INFO root: Stop requested, shutting down metric subscription...
 2026-07-01 12:39:58,149 INFO root: Unsubscribing from metric cpu_util_prct
@@ -498,7 +498,7 @@ subscribe_metric("cpu_util_prct")  # plain names normalize to /topic/<metric>
 
 # Wait some seconds while samples are buffered, then:
 values = query_metric_values("cpu_util_prct")
-# e.g. [42.0, 41.7]. Returned samples are consumed from the buffer
+# e.g. [{"timestamp": 1716712345.12, "value": 42.0}]. Returned samples are consumed from the buffer
 print(values)
 # Unsubscribe from the metric
 unsubscribe_metric("cpu_util_prct")
