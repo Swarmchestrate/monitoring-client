@@ -43,6 +43,7 @@ The following metrics are collected from Netdata or calculated from the collecte
 | `cpu_idle_instance`   | CPU idle percentage reported by Netdata from the `system.cpu` context using the `idle` dimension.  | 30 sec                       |
 | `ram_free_instance`   | Amount of free RAM reported by Netdata from the `system.ram` context using the `free` dimension.   | 30 sec                       |
 | `ram_total_instance`  | Total RAM reported by Netdata from the `system.ram` context. Values are aggregated using `SUM`.    | 30 sec                       |
+| `host_load_instance`  | 1-minute load average of the host, reported by Netdata from the `system.load` context using the `load1` dimension. | 30 sec |
 | `disk_read_activity`  | Disk read activity reported by Netdata from the `system.io` context using the `reads` dimension.   | 10 sec                       |
 | `disk_write_activity` | Disk write activity reported by Netdata from the `system.io` context using the `writes` dimension. | 10 sec                       |
 
@@ -57,6 +58,8 @@ Composite metrics are calculated globally using a **5-minute sliding window**.
 | `avg_disk_utilization` | Combined average disk read and write activity over the current 5-minute window. Absolute values are used so that read and write activity contribute positively to the resulting value. | `abs(mean(disk_read_activity)) + abs(mean(disk_write_activity))`                  | 10 sec                       |
 
 All metrics use `collection_output: all`. Composite metrics use `grouping: global`, meaning that the resulting values are aggregated globally rather than calculated separately per availability zone.
+
+> **Important:** Keep composite metrics on `grouping: "global"`. With the bundled `emsconfig.yaml`, `per_host` or `per_zone` makes EMS cluster its clients, which fails (`NullPointerException: connections is marked non-null but is null` in the EMS server log) and stops all metric publishing. For per-host values, use raw metrics such as `host_load_instance` with `subscribe_metric_raw(...)`.
 
 ### Example Configuration
 
@@ -85,6 +88,14 @@ raw:
     config:
       scope_contexts: system.ram
       results-aggregation: SUM
+    collection_frequency: "30 sec"
+    collection_output: "all"
+
+  - name: host_load_instance
+    sensor: "netdata"
+    config:
+      scope_contexts: system.load
+      dimensions: load1
     collection_frequency: "30 sec"
     collection_output: "all"
 
@@ -144,6 +155,8 @@ composite:
   values, or use `"cluster"` to dynamically map file profiles onto current
   Kubernetes nodes.
 
+> **Important:** Live raw subscriptions read the per-node EMS brokers (EPA), which publish the SAT's **raw** metrics collected from each host (for example `host_load_instance`). Composite metrics with `grouping: "global"`, such as `cpu_util_prct` in `stressng.yaml`, exist only on the EMS server; read them with `subscribe_metric(...)`.
+>
 > **Important:** An explicit node/IP list is the simplest option when running outside Kubernetes-aware environments because it does not require Kubernetes API access.
 >
 > **Important:** `node="all"` requires in-cluster Kubernetes config and RBAC permission to read Kubernetes nodes.
@@ -404,7 +417,7 @@ env | grep KUBERNETES_SERVICE
 Raw subscriptions connect directly to the resolved node IPs. Read buffered raw samples with:
 
 ```python
-raw_values = query_metric_values_raw("cpu_util_instance", seconds=60)
+raw_values = query_metric_values_raw("host_load_instance", seconds=60)
 ```
 
 The returned structure is grouped by node/IP:
@@ -622,7 +635,7 @@ exit_code = undeploy_monitoring(
 ```python
 from swchmonclient import subscribe_metric
 
-thread_name = subscribe_metric("cpu_util_instance")
+thread_name = subscribe_metric("cpu_util_prct")
 print(thread_name)
 ```
 
@@ -641,7 +654,7 @@ for timestamp in query_slo_violations("high_cpu"):
 ```python
 from swchmonclient import subscribe_metric_raw
 
-METRIC_NAME = "cpu_util_prct"
+METRIC_NAME = "host_load_instance"
 NODES = ["10.0.0.1", "10.0.0.2"]
 
 # Option 1: Subscribe to the raw metric for specific nodes.
@@ -664,7 +677,7 @@ print(threads)
 ```python
 from swchmonclient import query_metric_values
 
-standard_values = query_metric_values("cpu_util_instance")
+standard_values = query_metric_values("cpu_util_prct")
 ```
 
 ### `query_metric_values_raw`
@@ -672,7 +685,7 @@ standard_values = query_metric_values("cpu_util_instance")
 ```python
 from swchmonclient import query_metric_values_raw
 
-raw_values = query_metric_values_raw("cpu_util_instance", seconds=60)
+raw_values = query_metric_values_raw("host_load_instance", seconds=60)
 ```
 
 ### `unsubscribe_metric`
@@ -680,6 +693,6 @@ raw_values = query_metric_values_raw("cpu_util_instance", seconds=60)
 ```python
 from swchmonclient import unsubscribe_metric
 
-unsubscribe_metric("cpu_util_instance")
-# or: unsubscribe_metric("cpu_util_instance", nodes=["10.0.0.1"])
+unsubscribe_metric("cpu_util_prct")
+# or, for a raw subscription: unsubscribe_metric("host_load_instance", nodes=["10.0.0.1"])
 ```
