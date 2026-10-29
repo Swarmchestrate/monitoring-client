@@ -225,7 +225,7 @@ pip install .
 
 ### 3.2 API overview
 
-This section summarizes the functions used in the deployment, subscription, raw subscription, and undeploy steps below.
+This section summarizes the functions used in the deployment, subscription, raw subscription, SLO subscription, and undeploy steps below.
 
 #### `deploy_monitoring(...)`
 
@@ -308,7 +308,7 @@ topic, e.g. `{"level":3,"metricValue":4.497942,"timestamp":1792795789558}`.
 | `on_violation` | No | `Callable[[float], None] \| None` | Called with each violation's timestamp (Unix seconds) as it arrives. Runs on the listener thread, so keep it short; exceptions are logged and ignored. |
 
 `query_slo_violations(...)` returns and consumes the timestamps (Unix seconds) of
-every buffered violation, oldest first. `unsubscribe_slo(...)` stops the subscription.
+every buffered violation, in arrival order. `unsubscribe_slo(...)` stops the subscription.
 
 #### `subscribe_metric_raw(...)`
 
@@ -549,7 +549,7 @@ from swchmonclient import query_slo_violations, subscribe_slo, unsubscribe_slo
 
 subscribe_slo("cpu_utilization")  # listens on /topic/cpu_utilization_CONSTRAINT
 
-# Later: timestamps of every violation since the last query, oldest first
+# Later: timestamps of every violation since the last query, in arrival order
 for timestamp in query_slo_violations("cpu_utilization"):
     print("violated at", timestamp)
 

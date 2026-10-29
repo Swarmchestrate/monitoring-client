@@ -1,6 +1,6 @@
 # swchmonclient
 
-A Python library for deploying the monitoring stack and consuming SLO, constraints and raw metric events over STOMP in the Swarmchestrate project.
+A Python library for deploying the monitoring stack and consuming composite metrics, raw metrics and SLO violation events over STOMP in the Swarmchestrate project.
 
 ## Install
 
@@ -508,7 +508,7 @@ Subscribes to violation events of an SLO. EMS publishes each violation on the
 
 **Notes:**
 - SLO and standard metric subscriptions share one EPM listener and connection.
-- Unlike standard metrics, which keep only the latest value, every violation is kept until queried (up to `cache_size`).
+- Unlike standard metrics, which keep only the latest value, the timestamp of every violation is kept until queried (up to `cache_size`).
 - Calling `subscribe_slo(...)` again for a subscribed SLO applies any `cache_size` / `on_violation` passed explicitly and keeps the buffered violations; omitted arguments keep their current values.
 - Only the violation timestamp is kept; the other message fields (`metricValue`, `level`, ...) are discarded.
 - A topic cannot be subscribed both as an SLO and with `subscribe_metric(...)` / `subscribe_metric_raw(...)`.
@@ -550,8 +550,9 @@ Returns buffered raw metric values received within the last `seconds` seconds an
 
 ### `query_slo_violations(slo_name: str) -> list[float]`
 
-Returns the timestamps of all buffered violations for the SLO, oldest first, and
-consumes them. Timestamps are Unix seconds; EMS sends milliseconds and they are
+Returns the timestamps of all buffered violations for the SLO, in arrival order,
+and consumes them. Arrival order usually matches timestamp order, but is not
+guaranteed to (e.g. on redelivery), since the timestamps come from EMS. Timestamps are Unix seconds; EMS sends milliseconds and they are
 converted. A message without a usable timestamp gets the time it was received.
 
 **Output:**
