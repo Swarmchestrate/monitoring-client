@@ -563,7 +563,7 @@ converted. A message without a usable timestamp gets the time it was received.
 
 ### `unsubscribe_slo(slo_name: str) -> None`
 
-Stops receiving violations for the SLO. The shared listener stops once no SLO or standard metric subscription remains.
+Stops receiving violations for the SLO. Buffered timestamps that were not queried are discarded. The shared listener stops once no SLO or standard metric subscription remains.
 
 ### `unsubscribe_metric(metric: str, nodes: list[str] | None = None) -> None`
 
@@ -577,7 +577,7 @@ Stops metric listeners or removes node-specific subscriptions, depending on the 
 **Output:** no return value.
 
 **Behavior summary:**
-- Standard metric + no `nodes`: stop the shared listener when the last standard metric is removed.
+- Standard metric + no `nodes`: remove the subscription and discard its unqueried sample; the shared listener stops once no standard metric or SLO subscription remains.
 - Standard metric + `nodes`: keep the listener running, but ignore future samples from those nodes.
 - Raw metric + no `nodes`: stop all raw listeners for that metric.
 - Raw metric + `nodes`: stop only the listed raw node/IP listeners and remove their cached data buckets.
