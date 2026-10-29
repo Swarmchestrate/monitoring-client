@@ -350,6 +350,16 @@ def test_subscribe_metric_raw_logs_selector_resolution(
         f"'{selector}' resolved to nodes {resolved_nodes}"
     ) in caplog.text
 
+    # Wait for every listener to connect through the fake factory; otherwise a late
+    # listener uses the real STOMP client once monkeypatch is undone and blocks teardown.
+    deadline = time.time() + 2.0
+    while time.time() < deadline and not (
+        len(created) == len(resolved_nodes)
+        and all(connection.subscribe_calls for connection in created)
+    ):
+        time.sleep(0.01)
+    assert {connection.host for connection in created} == set(resolved_nodes)
+
 
 def test_subscribe_metric_raw_local_resolves_current_node_ip(monkeypatch):
     created = []
