@@ -512,7 +512,6 @@ def test_unsubscribe_metric_raw_stops_last_node_without_unsubscribe_hang(monkeyp
 def test_subscribe_metric_raw_keeps_last_1000_values(monkeypatch):
     class BurstConnection(FakeConnection):
         def subscribe(self, destination, id, ack):
-            self.subscribe_calls.append((destination, id, ack))
             self.subscription_ids[destination] = id
             base_timestamp = int(time.time() * 1000)
             for value in range(1001):
@@ -528,6 +527,8 @@ def test_subscribe_metric_raw_keeps_last_1000_values(monkeypatch):
                         destination,
                     )
                 )
+            # Recorded last so the test can wait until the whole burst was delivered.
+            self.subscribe_calls.append((destination, id, ack))
 
     created = []
 
@@ -544,7 +545,7 @@ def test_subscribe_metric_raw_keeps_last_1000_values(monkeypatch):
     subscribe_metric_raw("/topic/mysample_metric", ["node-a"])
 
     deadline = time.time() + 2.0
-    while time.time() < deadline and not created:
+    while time.time() < deadline and not (created and created[0].subscribe_calls):
         time.sleep(0.01)
 
     raw_values = query_metric_values_raw("/topic/mysample_metric", 60)
@@ -558,7 +559,6 @@ def test_subscribe_metric_raw_keeps_last_1000_values(monkeypatch):
 def test_subscribe_metric_raw_uses_custom_cache_size(monkeypatch):
     class BurstConnection(FakeConnection):
         def subscribe(self, destination, id, ack):
-            self.subscribe_calls.append((destination, id, ack))
             self.subscription_ids[destination] = id
             base_timestamp = int(time.time() * 1000)
             for value in range(10):
@@ -574,6 +574,8 @@ def test_subscribe_metric_raw_uses_custom_cache_size(monkeypatch):
                         destination,
                     )
                 )
+            # Recorded last so the test can wait until the whole burst was delivered.
+            self.subscribe_calls.append((destination, id, ack))
 
     created = []
 
@@ -590,7 +592,7 @@ def test_subscribe_metric_raw_uses_custom_cache_size(monkeypatch):
     subscribe_metric_raw("/topic/mysample_metric", ["node-a"], cache_size=5)
 
     deadline = time.time() + 2.0
-    while time.time() < deadline and not created:
+    while time.time() < deadline and not (created and created[0].subscribe_calls):
         time.sleep(0.01)
 
     raw_values = query_metric_values_raw("/topic/mysample_metric", 60)
