@@ -13,7 +13,7 @@ from swchmonclient import (
     unsubscribe_metric,
     unsubscribe_slo,
 )
-from swchmonclient.exceptions import MetricSubscriptionError
+from swchmonclient.exceptions import MetricSubscriptionError, ThreadManagementError
 from swchmonclient.metrics import _default_metric_subscription_manager
 
 # Timestamps of the two violations FakeConnection emits on subscribe, in seconds.
@@ -342,3 +342,64 @@ def test_subscribe_during_last_unsubscribe_restarts_listener(created, monkeypatc
     assert created[0].disconnected is True
     wait_for_subscribe_calls(created[1:], 1)
     assert created[1].subscribe_calls == [("/topic/high_cpu_CONSTRAINT", 1, "auto")]
+
+
+def test_unsubscribe_slo_succeeds_when_listener_already_exited(created, monkeypatch):
+    manager = _default_metric_subscription_manager
+    subscribe_slo("high_cpu")
+    wait_for_subscribe_calls(created, 1)
+    original_stop = manager._thread_manager.stop_listener_thread
+
+    def stop_then_report_crash(name, *args, **kwargs):
+        original_stop(name, *args, **kwargs)
+        raise ThreadManagementError(f"Thread '{name}' exited with error: boom")
+
+    monkeypatch.setattr(manager._thread_manager, "stop_listener_thread", stop_then_report_crash)
+
+    unsubscribe_slo("high_cpu")
+
+    with pytest.raises(MetricSubscriptionError, match="not subscribed"):
+        query_slo_violations("high_cpu")
+
+
+def test_unsubscribe_slo_restores_subscription_when_listener_keeps_running(created, monkeypatch):
+    manager = _default_metric_subscription_manager
+    subscribe_slo("high_cpu")
+    wait_for_subscribe_calls(created, 1)
+
+    def fail_to_stop(name, *args, **kwargs):
+        raise ThreadManagementError(f"Thread '{name}' did not stop")
+
+    monkeypatch.setattr(manager._thread_manager, "stop_listener_thread", fail_to_stop)
+
+    with pytest.raises(MetricSubscriptionError, match="Failed to unsubscribe"):
+        unsubscribe_slo("high_cpu")
+
+    assert query_slo_violations("high_cpu") == [FIRST_TIMESTAMP, SECOND_TIMESTAMP]
+
+
+def test_failed_resubscribe_keeps_previous_slo_settings(created, monkeypatch):
+    manager = _default_metric_subscription_manager
+    subscribe_slo("high_cpu")
+    wait_for_subscribe_calls(created, 1)
+    received = []
+
+    def fail_to_start():
+        raise MetricSubscriptionError("Failed to restart listener 'metric-listener'")
+
+    monkeypatch.setattr(manager, "_ensure_shared_listener", fail_to_start)
+
+    with pytest.raises(MetricSubscriptionError, match="Failed to subscribe to SLO"):
+        subscribe_slo("high_cpu", cache_size=1, on_violation=received.append)
+
+    created[0].emit(
+        json.dumps({"level": 1, "metricValue": 90.0, "timestamp": THIRD_RAW_TIMESTAMP}),
+        "/topic/high_cpu_CONSTRAINT",
+    )
+
+    assert received == []
+    assert query_slo_violations("high_cpu") == [
+        FIRST_TIMESTAMP,
+        SECOND_TIMESTAMP,
+        THIRD_TIMESTAMP,
+    ]

@@ -236,8 +236,21 @@ class MetricSubscriptionManager:
                         violation_timestamps=deque(maxlen=resolved_cache_size),
                         on_violation=on_violation,
                     )
-                else:
-                    # Re-subscribing applies explicitly passed settings and keeps buffered violations.
+
+            try:
+                thread_name = self._ensure_shared_listener()
+            except (ThreadManagementError, MetricSubscriptionError) as error:
+                if existing is None:
+                    with self._lock:
+                        self._slo_subscriptions.pop(destination, None)
+                raise MetricSubscriptionError(
+                    f"Failed to subscribe to SLO '{resolved_slo_name}': {error}"
+                ) from error
+
+            if existing is not None:
+                # Re-subscribing applies explicitly passed settings and keeps buffered
+                # violations; only done once the listener is known to be running.
+                with self._lock:
                     if cache_size is not None:
                         existing.violation_timestamps = deque(
                             existing.violation_timestamps,
@@ -246,15 +259,7 @@ class MetricSubscriptionManager:
                     if on_violation is not None:
                         existing.on_violation = on_violation
 
-            try:
-                return self._ensure_shared_listener()
-            except (ThreadManagementError, MetricSubscriptionError) as error:
-                if existing is None:
-                    with self._lock:
-                        self._slo_subscriptions.pop(destination, None)
-                raise MetricSubscriptionError(
-                    f"Failed to subscribe to SLO '{resolved_slo_name}': {error}"
-                ) from error
+            return thread_name
 
     def subscribe_metric_raw(
         self,
@@ -531,7 +536,7 @@ class MetricSubscriptionManager:
                 return
 
             try:
-                self._thread_manager.stop_listener_thread(thread_name)
+                self._stop_shared_listener(thread_name)
             except ThreadManagementError as error:
                 with self._lock:
                     self._subscriptions[destination] = removed_subscription
@@ -557,7 +562,7 @@ class MetricSubscriptionManager:
                 return
 
             try:
-                self._thread_manager.stop_listener_thread(thread_name)
+                self._stop_shared_listener(thread_name)
             except ThreadManagementError as error:
                 with self._lock:
                     self._slo_subscriptions[destination] = removed_subscription
@@ -646,6 +651,15 @@ class MetricSubscriptionManager:
             destinations_provider=self.get_destinations,
             listener=listener,
         )
+
+    def _stop_shared_listener(self, thread_name: str) -> None:
+        """Stop the shared listener. A listener that already exited counts as stopped."""
+        try:
+            self._thread_manager.stop_listener_thread(thread_name)
+        except ThreadManagementError as error:
+            if thread_name in self._thread_manager.list_threads():
+                raise
+            logger.warning("Shared listener '%s' had already stopped: %s", thread_name, error)
 
     def _build_metric_handler(self):
         def handle_message(frame: object) -> None:
