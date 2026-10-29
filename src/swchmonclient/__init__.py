@@ -22,4 +22,4 @@ __all__ = [
     "unsubscribe_metric",
     "unsubscribe_slo",
 ]
-__version__ = "0.2.3"
+__version__ = "0.3.0"
