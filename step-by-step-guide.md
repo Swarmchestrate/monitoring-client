@@ -290,9 +290,9 @@ unsubscribe_metric(metric: str) -> None
 subscribe_slo(
     slo_name: str,
     cache_size: int | None = None,
-    on_violation: Callable[[dict[str, Any]], None] | None = None,
+    on_violation: Callable[[float], None] | None = None,
 ) -> str
-query_slo_violations(slo_name: str) -> list[dict[str, Any]]
+query_slo_violations(slo_name: str) -> list[float]
 unsubscribe_slo(slo_name: str) -> None
 ```
 
@@ -305,10 +305,10 @@ topic, e.g. `{"level":3,"metricValue":4.497942,"timestamp":1792795789558}`.
 | --- | --- | --- | --- |
 | `slo_name` | Yes | `str` | SLO name as defined in the SAT `slo-constraints` (e.g. `high_cpu`). `high_cpu_CONSTRAINT` and `/topic/high_cpu_CONSTRAINT` are accepted too. |
 | `cache_size` | No | `int \| None` | Maximum number of buffered violations for this SLO; older ones are dropped first. Defaults to `1000`. |
-| `on_violation` | No | `Callable[[dict], None] \| None` | Called with each violation dict as it arrives. Runs on the listener thread, so keep it short; exceptions are logged and ignored. |
+| `on_violation` | No | `Callable[[float], None] \| None` | Called with each violation's timestamp (Unix seconds) as it arrives. Runs on the listener thread, so keep it short; exceptions are logged and ignored. |
 
-`query_slo_violations(...)` returns and consumes every buffered violation, oldest
-first. `unsubscribe_slo(...)` stops the subscription.
+`query_slo_violations(...)` returns and consumes the timestamps (Unix seconds) of
+every buffered violation, oldest first. `unsubscribe_slo(...)` stops the subscription.
 
 #### `subscribe_metric_raw(...)`
 
@@ -549,9 +549,9 @@ from swchmonclient import query_slo_violations, subscribe_slo, unsubscribe_slo
 
 subscribe_slo("cpu_utilization")  # listens on /topic/cpu_utilization_CONSTRAINT
 
-# Later: every violation since the last query, oldest first
-for violation in query_slo_violations("cpu_utilization"):
-    print(violation["level"], violation["metric_value"], violation["timestamp"])
+# Later: timestamps of every violation since the last query, oldest first
+for timestamp in query_slo_violations("cpu_utilization"):
+    print("violated at", timestamp)
 
 unsubscribe_slo("cpu_utilization")
 ```
@@ -559,7 +559,7 @@ unsubscribe_slo("cpu_utilization")
 To react immediately instead of polling, pass a callback:
 
 ```python
-subscribe_slo("cpu_utilization", on_violation=lambda v: print("SLO violated:", v))
+subscribe_slo("cpu_utilization", on_violation=lambda ts: print("SLO violated at", ts))
 ```
 
 ### 3.5 Gather raw metrics directly from node IPs (EPA)

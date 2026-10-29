@@ -30,11 +30,11 @@ def main() -> int:
 
     try:
         while not stopping:
-            violations = query_slo_violations(SLO_NAME)
+            timestamps = query_slo_violations(SLO_NAME)
             logging.info(
-                "Buffered violations for %s: %s",
+                "Violation timestamps for %s: %s",
                 SLO_NAME,
-                violations,
+                timestamps,
             )
             time.sleep(POLL_INTERVAL_SECONDS)
     finally:

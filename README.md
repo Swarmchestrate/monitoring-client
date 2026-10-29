@@ -492,7 +492,7 @@ versioned JSON source file.
 - **Important:** In live mode, `node="all"` and `node="local"` use in-cluster Kubernetes API access.
 - **Important:** In live mode, `node="local"` needs `get pods` in the current namespace and `get,list nodes` cluster-wide.
 
-### `subscribe_slo(slo_name: str, cache_size: int | None = None, on_violation: Callable[[dict[str, Any]], None] | None = None) -> str`
+### `subscribe_slo(slo_name: str, cache_size: int | None = None, on_violation: Callable[[float], None] | None = None) -> str`
 
 Subscribes to violation events of an SLO. EMS publishes each violation on the
 `<slo_name>_CONSTRAINT` topic as JSON such as
@@ -502,7 +502,7 @@ Subscribes to violation events of an SLO. EMS publishes each violation on the
 | --- | --- | --- | --- |
 | `slo_name` | Yes | `str` | SLO name as defined in the SAT `slo-constraints` (e.g. `high_cpu`). `high_cpu_CONSTRAINT` and `/topic/high_cpu_CONSTRAINT` are accepted too. |
 | `cache_size` | No | `int \| None` | Maximum number of buffered violations for this SLO; older ones are dropped first. Defaults to `1000`. |
-| `on_violation` | No | `Callable[[dict], None] \| None` | Called with each violation dict as it arrives. Runs on the listener thread, so keep it short; exceptions are logged and ignored. |
+| `on_violation` | No | `Callable[[float], None] \| None` | Called with each violation's timestamp (Unix seconds) as it arrives. Runs on the listener thread, so keep it short; exceptions are logged and ignored. |
 
 **Output:** `str` thread name of the shared listener, currently `metric-listener`.
 
@@ -510,6 +510,7 @@ Subscribes to violation events of an SLO. EMS publishes each violation on the
 - SLO and standard metric subscriptions share one EPM listener and connection.
 - Unlike standard metrics, which keep only the latest value, every violation is kept until queried (up to `cache_size`).
 - Calling `subscribe_slo(...)` again for a subscribed SLO applies any `cache_size` / `on_violation` passed explicitly and keeps the buffered violations; omitted arguments keep their current values.
+- Only the violation timestamp is kept; the other message fields (`metricValue`, `level`, ...) are discarded.
 - A topic cannot be subscribed both as an SLO and with `subscribe_metric(...)` / `subscribe_metric_raw(...)`.
 
 ### `query_metric_values(metric: str) -> list[dict[str, Any]]`
@@ -547,23 +548,16 @@ Returns buffered raw metric values received within the last `seconds` seconds an
 }
 ```
 
-### `query_slo_violations(slo_name: str) -> list[dict[str, Any]]`
+### `query_slo_violations(slo_name: str) -> list[float]`
 
-Returns all buffered violations for the SLO, oldest first, and consumes them.
-`payload` holds the full decoded message, including any extra fields EMS sends.
+Returns the timestamps of all buffered violations for the SLO, oldest first, and
+consumes them. Timestamps are Unix seconds; EMS sends milliseconds and they are
+converted. A message without a usable timestamp gets the time it was received.
 
 **Output:**
 
 ```python
-[
-    {
-        "slo": "high_cpu",
-        "metric_value": 4.497942,
-        "level": 3,
-        "timestamp": 1792795789.558,  # seconds; EMS sends milliseconds
-        "payload": {"level": 3, "metricValue": 4.497942, "timestamp": 1792795789558},
-    },
-]
+[1792749239.512, 1792795789.558]
 ```
 
 ### `unsubscribe_slo(slo_name: str) -> None`
@@ -637,8 +631,8 @@ print(thread_name)
 from swchmonclient import query_slo_violations, subscribe_slo
 
 subscribe_slo("high_cpu")  # listens on /topic/high_cpu_CONSTRAINT
-for violation in query_slo_violations("high_cpu"):
-    print(violation["level"], violation["metric_value"], violation["timestamp"])
+for timestamp in query_slo_violations("high_cpu"):
+    print("violated at", timestamp)
 ```
 
 ### `subscribe_metric_raw`

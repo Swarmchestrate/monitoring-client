@@ -47,19 +47,11 @@ class _MetricSubscription:
 
 
 @dataclass
-class _SloViolation:
-    timestamp: float
-    metric_value: Any
-    level: Any
-    payload: Any
-
-
-@dataclass
 class _SloSubscription:
     slo_name: str
     thread_name: str
-    violations: Deque[_SloViolation]
-    on_violation: Callable[[dict[str, Any]], None] | None = None
+    violation_timestamps: Deque[float]
+    on_violation: Callable[[float], None] | None = None
 
 
 @dataclass
@@ -167,21 +159,10 @@ def _metric_fields_from_payload(
     return payload, time.time(), _extract_node(headers)
 
 
-def _slo_violation_from_payload(payload: Any) -> _SloViolation:
+def _slo_violation_timestamp(payload: Any) -> float:
     if isinstance(payload, dict):
-        return _SloViolation(
-            timestamp=_normalize_timestamp(payload.get("timestamp")),
-            metric_value=payload.get("metricValue"),
-            level=payload.get("level"),
-            payload=payload,
-        )
-
-    return _SloViolation(
-        timestamp=time.time(),
-        metric_value=payload,
-        level=None,
-        payload=payload,
-    )
+        return _normalize_timestamp(payload.get("timestamp"))
+    return time.time()
 
 
 class MetricSubscriptionManager:
@@ -236,7 +217,7 @@ class MetricSubscriptionManager:
         self,
         slo_name: str,
         cache_size: int | None = None,
-        on_violation: Callable[[dict[str, Any]], None] | None = None,
+        on_violation: Callable[[float], None] | None = None,
     ) -> str:
         resolved_slo_name, destination = self._normalize_slo(slo_name)
         resolved_cache_size = self._resolve_cache_size(cache_size, SLO_MAX_VIOLATIONS_PER_SLO)
@@ -252,14 +233,14 @@ class MetricSubscriptionManager:
                     self._slo_subscriptions[destination] = _SloSubscription(
                         slo_name=resolved_slo_name,
                         thread_name=LISTENER_THREAD_NAME,
-                        violations=deque(maxlen=resolved_cache_size),
+                        violation_timestamps=deque(maxlen=resolved_cache_size),
                         on_violation=on_violation,
                     )
                 else:
                     # Re-subscribing applies explicitly passed settings and keeps buffered violations.
                     if cache_size is not None:
-                        existing.violations = deque(
-                            existing.violations,
+                        existing.violation_timestamps = deque(
+                            existing.violation_timestamps,
                             maxlen=resolved_cache_size,
                         )
                     if on_violation is not None:
@@ -502,19 +483,16 @@ class MetricSubscriptionManager:
             for sample in matching_samples
         ]
 
-    def query_slo_violations(self, slo_name: str) -> list[dict[str, Any]]:
+    def query_slo_violations(self, slo_name: str) -> list[float]:
         resolved_slo_name, destination = self._normalize_slo(slo_name)
         with self._lock:
             subscription = self._slo_subscriptions.get(destination)
             if subscription is None:
                 raise MetricSubscriptionError(f"SLO '{resolved_slo_name}' is not subscribed")
-            violations = list(subscription.violations)
-            subscription.violations.clear()
+            timestamps = list(subscription.violation_timestamps)
+            subscription.violation_timestamps.clear()
 
-        return [
-            self._serialize_slo_violation(resolved_slo_name, violation)
-            for violation in violations
-        ]
+        return timestamps
 
     def query_metric_values_raw(
         self,
@@ -693,8 +671,8 @@ class MetricSubscriptionManager:
                     )
                     return
 
-                violation = _slo_violation_from_payload(payload)
-                slo_subscription.violations.append(violation)
+                timestamp = _slo_violation_timestamp(payload)
+                slo_subscription.violation_timestamps.append(timestamp)
                 slo_name = slo_subscription.slo_name
                 on_violation = slo_subscription.on_violation
 
@@ -702,7 +680,7 @@ class MetricSubscriptionManager:
                 return
 
             try:
-                on_violation(self._serialize_slo_violation(slo_name, violation))
+                on_violation(timestamp)
             except Exception:
                 logger.exception("SLO violation callback for '%s' failed", slo_name)
 
@@ -1406,16 +1384,6 @@ class MetricSubscriptionManager:
 
         return resolved_slo_name, f"{SLO_TOPIC_PREFIX}{resolved_slo_name}{SLO_TOPIC_SUFFIX}"
 
-    @staticmethod
-    def _serialize_slo_violation(slo_name: str, violation: _SloViolation) -> dict[str, Any]:
-        return {
-            "slo": slo_name,
-            "metric_value": violation.metric_value,
-            "level": violation.level,
-            "timestamp": violation.timestamp,
-            "payload": violation.payload,
-        }
-
     @classmethod
     def _extract_destination(cls, frame: object) -> str | None:
         headers = cls._extract_headers(frame)
@@ -1495,7 +1463,7 @@ def subscribe_metric_raw(
 def subscribe_slo(
     slo_name: str,
     cache_size: int | None = None,
-    on_violation: Callable[[dict[str, Any]], None] | None = None,
+    on_violation: Callable[[float], None] | None = None,
 ) -> str:
     """Subscribe to violation events of ``slo_name`` on its ``<slo>_CONSTRAINT`` topic."""
     return _default_metric_subscription_manager.subscribe_slo(
@@ -1518,8 +1486,8 @@ def query_metric_values_raw(
     return _default_metric_subscription_manager.query_metric_values_raw(metric, seconds)
 
 
-def query_slo_violations(slo_name: str) -> list[dict[str, Any]]:
-    """Return and consume all buffered violation events for ``slo_name``."""
+def query_slo_violations(slo_name: str) -> list[float]:
+    """Return and consume the timestamps (seconds) of buffered violations for ``slo_name``."""
     return _default_metric_subscription_manager.query_slo_violations(slo_name)
 
 

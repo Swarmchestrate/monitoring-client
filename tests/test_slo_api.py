@@ -16,6 +16,12 @@ from swchmonclient import (
 from swchmonclient.exceptions import MetricSubscriptionError
 from swchmonclient.metrics import _default_metric_subscription_manager
 
+# Timestamps of the two violations FakeConnection emits on subscribe, in seconds.
+FIRST_TIMESTAMP = 1792749239.512
+SECOND_TIMESTAMP = 1792795789.558
+THIRD_RAW_TIMESTAMP = 1792800000000
+THIRD_TIMESTAMP = 1792800000.0
+
 
 class FakeFrame:
     def __init__(self, body, destination):
@@ -106,22 +112,7 @@ def test_subscribe_slo_buffers_all_violations(created):
 
     assert thread_name == "metric-listener"
     assert created[0].subscribe_calls == [("/topic/high_cpu_CONSTRAINT", 1, "auto")]
-    assert query_slo_violations("high_cpu") == [
-        {
-            "slo": "high_cpu",
-            "metric_value": 8.32034,
-            "level": 3,
-            "timestamp": 1792749239.512,
-            "payload": {"level": 3, "metricValue": 8.32034, "timestamp": 1792749239512},
-        },
-        {
-            "slo": "high_cpu",
-            "metric_value": 4.497942,
-            "level": 2,
-            "timestamp": 1792795789.558,
-            "payload": {"level": 2, "metricValue": 4.497942, "timestamp": 1792795789558},
-        },
-    ]
+    assert query_slo_violations("high_cpu") == [FIRST_TIMESTAMP, SECOND_TIMESTAMP]
     assert query_slo_violations("high_cpu") == []
 
 
@@ -143,28 +134,37 @@ def test_subscribe_slo_rejects_invalid_names(slo_name):
         subscribe_slo(slo_name)
 
 
-def test_subscribe_slo_keeps_extra_payload_fields_and_non_json_bodies(created):
+def test_subscribe_slo_uses_receive_time_for_non_json_bodies(created):
     subscribe_slo("high_cpu")
     wait_for_subscribe_calls(created, 1)
     query_slo_violations("high_cpu")
 
+    before = time.time()
+    created[0].emit("not-json", "/topic/high_cpu_CONSTRAINT")
+    after = time.time()
+
+    [timestamp] = query_slo_violations("high_cpu")
+    assert before <= timestamp <= after
+
+
+def test_on_violation_callback_receives_timestamp(created):
+    received = []
+    subscribe_slo("high_cpu", on_violation=received.append)
+    wait_for_subscribe_calls(created, 1)
+
     created[0].emit(
-        json.dumps({"level": 1, "metricValue": 90.0, "timestamp": 1792795789558, "zone": "a"}),
+        json.dumps({"level": 1, "metricValue": 90.0, "timestamp": THIRD_RAW_TIMESTAMP, "zone": "a"}),
         "/topic/high_cpu_CONSTRAINT",
     )
-    created[0].emit("not-json", "/topic/high_cpu_CONSTRAINT")
 
-    violations = query_slo_violations("high_cpu")
-    assert violations[0]["payload"]["zone"] == "a"
-    assert violations[1]["metric_value"] == "not-json"
-    assert violations[1]["level"] is None
+    assert received == [FIRST_TIMESTAMP, SECOND_TIMESTAMP, THIRD_TIMESTAMP]
 
 
 def test_subscribe_slo_uses_custom_cache_size(created):
     subscribe_slo("high_cpu", cache_size=1)
     wait_for_subscribe_calls(created, 1)
 
-    assert [violation["level"] for violation in query_slo_violations("high_cpu")] == [2]
+    assert query_slo_violations("high_cpu") == [SECOND_TIMESTAMP]
 
 
 def test_subscribe_slo_rejects_non_positive_cache_size():
@@ -182,8 +182,8 @@ def test_subscribe_slo_invokes_callback_and_survives_callback_errors(created):
     subscribe_slo("high_cpu", on_violation=on_violation)
     wait_for_subscribe_calls(created, 1)
 
-    assert [violation["level"] for violation in received] == [3, 2]
-    assert [violation["level"] for violation in query_slo_violations("high_cpu")] == [3, 2]
+    assert received == [FIRST_TIMESTAMP, SECOND_TIMESTAMP]
+    assert query_slo_violations("high_cpu") == [FIRST_TIMESTAMP, SECOND_TIMESTAMP]
 
 
 def test_subscribe_slo_shares_listener_with_metrics(created):
@@ -259,12 +259,12 @@ def test_resubscribe_slo_applies_new_settings_and_keeps_buffer(created):
 
     subscribe_slo("high_cpu", cache_size=1, on_violation=received.append)
     created[0].emit(
-        json.dumps({"level": 1, "metricValue": 90.0, "timestamp": 1792795789558}),
+        json.dumps({"level": 1, "metricValue": 90.0, "timestamp": THIRD_RAW_TIMESTAMP}),
         "/topic/high_cpu_CONSTRAINT",
     )
 
-    assert [violation["level"] for violation in received] == [1]
-    assert [violation["level"] for violation in query_slo_violations("high_cpu")] == [1]
+    assert received == [THIRD_TIMESTAMP]
+    assert query_slo_violations("high_cpu") == [THIRD_TIMESTAMP]
 
 
 def test_resubscribe_slo_without_arguments_keeps_existing_settings(created):
@@ -274,8 +274,8 @@ def test_resubscribe_slo_without_arguments_keeps_existing_settings(created):
 
     subscribe_slo("high_cpu")
 
-    assert [violation["level"] for violation in query_slo_violations("high_cpu")] == [2]
-    assert [violation["level"] for violation in received] == [3, 2]
+    assert query_slo_violations("high_cpu") == [SECOND_TIMESTAMP]
+    assert received == [FIRST_TIMESTAMP, SECOND_TIMESTAMP]
 
 
 @pytest.mark.parametrize(
