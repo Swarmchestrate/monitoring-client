@@ -87,6 +87,10 @@ def cleanup_subscriptions():
         unsubscribe_metric(metric)
 
 
+def _query_values(metric):
+    return [sample["value"] for sample in query_metric_values(metric)]
+
+
 def test_subscribe_and_query_metric_values(monkeypatch):
     created = []
 
@@ -111,7 +115,13 @@ def test_subscribe_and_query_metric_values(monkeypatch):
     assert thread_name == "metric-listener"
     assert created
     assert created[0].subscribe_calls == [("/topic/mysample_metric", 1, "auto")]
-    assert query_metric_values("/topic/mysample_metric") == [15.0]
+    before_query = time.time()
+    samples = query_metric_values("/topic/mysample_metric")
+    assert len(samples) == 1
+    assert set(samples[0]) == {"timestamp", "value"}
+    assert samples[0]["value"] == 15.0
+    assert isinstance(samples[0]["timestamp"], float)
+    assert before_query - 5 <= samples[0]["timestamp"] <= before_query
     assert query_metric_values("/topic/mysample_metric") == []
 
 
@@ -167,8 +177,8 @@ def test_subscribe_metric_adds_metric_to_shared_listener(monkeypatch):
         ("/topic/cpu_util_instance", 1, "auto"),
         ("/topic/mem_util_instance", 2, "auto"),
     ]
-    assert query_metric_values("/topic/cpu_util_instance") == [15.0]
-    assert query_metric_values("/topic/mem_util_instance") == [15.0]
+    assert _query_values("/topic/cpu_util_instance") == [15.0]
+    assert _query_values("/topic/mem_util_instance") == [15.0]
 
 
 def test_subscribe_metric_raw_starts_listener_per_node(monkeypatch):
@@ -340,6 +350,16 @@ def test_subscribe_metric_raw_logs_selector_resolution(
         f"'{selector}' resolved to nodes {resolved_nodes}"
     ) in caplog.text
 
+    # Wait for every listener to connect through the fake factory; otherwise a late
+    # listener uses the real STOMP client once monkeypatch is undone and blocks teardown.
+    deadline = time.time() + 2.0
+    while time.time() < deadline and not (
+        len(created) == len(resolved_nodes)
+        and all(connection.subscribe_calls for connection in created)
+    ):
+        time.sleep(0.01)
+    assert {connection.host for connection in created} == set(resolved_nodes)
+
 
 def test_subscribe_metric_raw_local_resolves_current_node_ip(monkeypatch):
     created = []
@@ -502,7 +522,6 @@ def test_unsubscribe_metric_raw_stops_last_node_without_unsubscribe_hang(monkeyp
 def test_subscribe_metric_raw_keeps_last_1000_values(monkeypatch):
     class BurstConnection(FakeConnection):
         def subscribe(self, destination, id, ack):
-            self.subscribe_calls.append((destination, id, ack))
             self.subscription_ids[destination] = id
             base_timestamp = int(time.time() * 1000)
             for value in range(1001):
@@ -518,6 +537,8 @@ def test_subscribe_metric_raw_keeps_last_1000_values(monkeypatch):
                         destination,
                     )
                 )
+            # Recorded last so the test can wait until the whole burst was delivered.
+            self.subscribe_calls.append((destination, id, ack))
 
     created = []
 
@@ -534,7 +555,7 @@ def test_subscribe_metric_raw_keeps_last_1000_values(monkeypatch):
     subscribe_metric_raw("/topic/mysample_metric", ["node-a"])
 
     deadline = time.time() + 2.0
-    while time.time() < deadline and not created:
+    while time.time() < deadline and not (created and created[0].subscribe_calls):
         time.sleep(0.01)
 
     raw_values = query_metric_values_raw("/topic/mysample_metric", 60)
@@ -548,7 +569,6 @@ def test_subscribe_metric_raw_keeps_last_1000_values(monkeypatch):
 def test_subscribe_metric_raw_uses_custom_cache_size(monkeypatch):
     class BurstConnection(FakeConnection):
         def subscribe(self, destination, id, ack):
-            self.subscribe_calls.append((destination, id, ack))
             self.subscription_ids[destination] = id
             base_timestamp = int(time.time() * 1000)
             for value in range(10):
@@ -564,6 +584,8 @@ def test_subscribe_metric_raw_uses_custom_cache_size(monkeypatch):
                         destination,
                     )
                 )
+            # Recorded last so the test can wait until the whole burst was delivered.
+            self.subscribe_calls.append((destination, id, ack))
 
     created = []
 
@@ -580,7 +602,7 @@ def test_subscribe_metric_raw_uses_custom_cache_size(monkeypatch):
     subscribe_metric_raw("/topic/mysample_metric", ["node-a"], cache_size=5)
 
     deadline = time.time() + 2.0
-    while time.time() < deadline and not created:
+    while time.time() < deadline and not (created and created[0].subscribe_calls):
         time.sleep(0.01)
 
     raw_values = query_metric_values_raw("/topic/mysample_metric", 60)
@@ -1028,7 +1050,7 @@ def test_unsubscribe_metric_blocks_selected_nodes(monkeypatch):
     subscribe_metric("/topic/mysample_metric")
     unsubscribe_metric("/topic/mysample_metric", nodes=["node-a"])
 
-    assert query_metric_values("/topic/mysample_metric") == [15.0]
+    assert _query_values("/topic/mysample_metric") == [15.0]
 
 
 def test_unsubscribe_metric_stops_listener(monkeypatch):
@@ -1086,7 +1108,7 @@ def test_unsubscribe_metric_keeps_shared_listener_running(monkeypatch):
 
     assert created[0].unsubscribe_calls == [1]
     assert created[0].disconnected is False
-    assert query_metric_values("/topic/mem_util_instance") == [15.0]
+    assert _query_values("/topic/mem_util_instance") == [15.0]
     with pytest.raises(MetricSubscriptionError, match="not subscribed"):
         query_metric_values("/topic/cpu_util_instance")
 

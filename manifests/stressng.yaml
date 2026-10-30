@@ -66,6 +66,13 @@ service_template:
                 results-aggregation: SUM
               collection_frequency: "30 sec"
               collection_output: "all"
+            - name: host_load_instance
+              sensor: "netdata"
+              config:
+                scope_contexts: system.load
+                dimensions: load1
+              collection_frequency: "30 sec"
+              collection_output: "all"
             - name: disk_read_activity
               sensor: "netdata"
               config:
@@ -106,10 +113,6 @@ service_template:
           properties:
             name: cpu_utilization
             metric: cpu_util_prct
-            operator: ">"
-            threshold: 80.0
-            name: ram_utilization
-            metric: ram_util_prct
             operator: ">"
             threshold: 80.0
 

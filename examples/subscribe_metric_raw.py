@@ -9,7 +9,7 @@ from swchmonclient import (
     unsubscribe_metric,
 )
 
-METRIC_NAME = "cpu_util_prct"
+METRIC_NAME = "host_load_instance"
 NODES = ["100.104.109.71", "100.118.84.34"]
 RUN_SECONDS = 180
 QUERY_WINDOW_SECONDS = 30

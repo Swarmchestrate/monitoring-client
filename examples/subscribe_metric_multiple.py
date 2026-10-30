@@ -38,7 +38,7 @@ def main() -> int:
         while not stopping:
             for metric in METRIC_NAMES:
                 values = query_metric_values(metric)
-                logging.info("Latest buffered value for %s: %s", metric, values)
+                logging.info("Latest buffered sample for %s: %s", metric, values)
             time.sleep(POLL_INTERVAL_SECONDS)
     finally:
         for metric in subscribed:

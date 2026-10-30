@@ -1,6 +1,6 @@
 # swchmonclient
 
-A Python library for deploying the monitoring stack and consuming SLO, constraints and raw metric events over STOMP in the Swarmchestrate project.
+A Python library for deploying the monitoring stack and consuming composite metrics, raw metrics and SLO violation events over STOMP in the Swarmchestrate project.
 
 ## Install
 
@@ -19,7 +19,8 @@ uv add swchmonclient
 - `deploy_monitoring(...)` and `undeploy_monitoring(...)` manage the monitoring manifests from inside Kubernetes.
 - `subscribe_metric(...)` consumes standard metrics through a shared STOMP listener from EPM.
 - `subscribe_metric_raw(...)` consumes raw metrics directly from resolved node IPs EPA.
-- Metric values are buffered until `query_metric_values(...)` or `query_metric_values_raw(...)` is called.
+- `subscribe_slo(...)` consumes SLO violation events that EMS publishes on the `<slo_name>_CONSTRAINT` topic in EPM.
+- Metric values are buffered until `query_metric_values(...)` or `query_metric_values_raw(...)` is called; SLO violations until `query_slo_violations(...)` is called.
 - Returned samples are consumed from the in-memory buffers.
 
 > **Important:** `deploy_monitoring(...)` and `undeploy_monitoring(...)` use in-cluster Kubernetes configuration. Run them from a pod that has a mounted service account token and RBAC permission to create, patch, get, list, and delete the Kubernetes resources referenced by the monitoring manifests.
@@ -42,6 +43,7 @@ The following metrics are collected from Netdata or calculated from the collecte
 | `cpu_idle_instance`   | CPU idle percentage reported by Netdata from the `system.cpu` context using the `idle` dimension.  | 30 sec                       |
 | `ram_free_instance`   | Amount of free RAM reported by Netdata from the `system.ram` context using the `free` dimension.   | 30 sec                       |
 | `ram_total_instance`  | Total RAM reported by Netdata from the `system.ram` context. Values are aggregated using `SUM`.    | 30 sec                       |
+| `host_load_instance`  | 1-minute load average of the host, reported by Netdata from the `system.load` context using the `load1` dimension. | 30 sec |
 | `disk_read_activity`  | Disk read activity reported by Netdata from the `system.io` context using the `reads` dimension.   | 10 sec                       |
 | `disk_write_activity` | Disk write activity reported by Netdata from the `system.io` context using the `writes` dimension. | 10 sec                       |
 
@@ -56,6 +58,8 @@ Composite metrics are calculated globally using a **5-minute sliding window**.
 | `avg_disk_utilization` | Combined average disk read and write activity over the current 5-minute window. Absolute values are used so that read and write activity contribute positively to the resulting value. | `abs(mean(disk_read_activity)) + abs(mean(disk_write_activity))`                  | 10 sec                       |
 
 All metrics use `collection_output: all`. Composite metrics use `grouping: global`, meaning that the resulting values are aggregated globally rather than calculated separately per availability zone.
+
+> **Important:** Keep composite metrics on `grouping: "global"`. With the bundled `emsconfig.yaml`, `per_host` or `per_zone` makes EMS cluster its clients, which fails (`NullPointerException: connections is marked non-null but is null` in the EMS server log) and stops all metric publishing. For per-host values, use raw metrics such as `host_load_instance` with `subscribe_metric_raw(...)`.
 
 ### Example Configuration
 
@@ -84,6 +88,14 @@ raw:
     config:
       scope_contexts: system.ram
       results-aggregation: SUM
+    collection_frequency: "30 sec"
+    collection_output: "all"
+
+  - name: host_load_instance
+    sensor: "netdata"
+    config:
+      scope_contexts: system.load
+      dimensions: load1
     collection_frequency: "30 sec"
     collection_output: "all"
 
@@ -143,6 +155,8 @@ composite:
   values, or use `"cluster"` to dynamically map file profiles onto current
   Kubernetes nodes.
 
+> **Important:** Live raw subscriptions read the per-node EMS brokers (EPA), which publish the SAT's **raw** metrics collected from each host (for example `host_load_instance`). Composite metrics with `grouping: "global"`, such as `cpu_util_prct` in `stressng.yaml`, exist only on the EMS server; read them with `subscribe_metric(...)`.
+>
 > **Important:** An explicit node/IP list is the simplest option when running outside Kubernetes-aware environments because it does not require Kubernetes API access.
 >
 > **Important:** `node="all"` requires in-cluster Kubernetes config and RBAC permission to read Kubernetes nodes.
@@ -403,7 +417,7 @@ env | grep KUBERNETES_SERVICE
 Raw subscriptions connect directly to the resolved node IPs. Read buffered raw samples with:
 
 ```python
-raw_values = query_metric_values_raw("cpu_util_instance", seconds=60)
+raw_values = query_metric_values_raw("host_load_instance", seconds=60)
 ```
 
 The returned structure is grouped by node/IP:
@@ -491,9 +505,30 @@ versioned JSON source file.
 - **Important:** In live mode, `node="all"` and `node="local"` use in-cluster Kubernetes API access.
 - **Important:** In live mode, `node="local"` needs `get pods` in the current namespace and `get,list nodes` cluster-wide.
 
-### `query_metric_values(metric: str) -> list[Any]`
+### `subscribe_slo(slo_name: str, cache_size: int | None = None, on_violation: Callable[[float], None] | None = None) -> str`
 
-Returns all currently buffered metric values for the metric and consumes those returned samples.
+Subscribes to violation events of an SLO. EMS publishes each violation on the
+`<slo_name>_CONSTRAINT` topic as JSON such as
+`{"level":3,"metricValue":4.497942,"timestamp":1792795789558}`.
+
+| Parameter | Required | Type | Description |
+| --- | --- | --- | --- |
+| `slo_name` | Yes | `str` | SLO name as defined in the SAT `slo-constraints` (e.g. `high_cpu`). `high_cpu_CONSTRAINT` and `/topic/high_cpu_CONSTRAINT` are accepted too. |
+| `cache_size` | No | `int \| None` | Maximum number of buffered violations for this SLO; older ones are dropped first. Defaults to `1000`. |
+| `on_violation` | No | `Callable[[float], None] \| None` | Called with each violation's timestamp (Unix seconds) as it arrives. Runs on the listener thread, so keep it short; exceptions are logged and ignored. |
+
+**Output:** `str` thread name of the shared listener, currently `metric-listener`.
+
+**Notes:**
+- SLO and standard metric subscriptions share one EPM listener and connection.
+- Unlike standard metrics, which keep only the latest value, the timestamp of every violation is kept until queried (up to `cache_size`).
+- Calling `subscribe_slo(...)` again for a subscribed SLO applies any `cache_size` / `on_violation` passed explicitly and keeps the buffered violations; omitted arguments keep their current values.
+- Only the violation timestamp is kept; the other message fields (`metricValue`, `level`, ...) are discarded.
+- A topic cannot be subscribed both as an SLO and with `subscribe_metric(...)` / `subscribe_metric_raw(...)`.
+
+### `query_metric_values(metric: str) -> list[dict[str, Any]]`
+
+Returns the currently buffered sample for the metric and consumes it. Only the latest received sample is buffered, so the list holds at most one entry, and it is empty when no new sample arrived since the previous query. Each entry has the same shape as the entries of `query_metric_values_raw(...)`; `timestamp` is a Unix timestamp in seconds.
 
 | Parameter | Required | Type | Description |
 | --- | --- | --- | --- |
@@ -502,7 +537,9 @@ Returns all currently buffered metric values for the metric and consumes those r
 **Output:**
 
 ```python
-[42.0, 41.7]
+[
+    {"timestamp": 1716712345.12, "value": 42.0},
+]
 ```
 
 ### `query_metric_values_raw(metric: str, seconds: int) -> dict[str, list[dict[str, Any]]]`
@@ -524,6 +561,23 @@ Returns buffered raw metric values received within the last `seconds` seconds an
 }
 ```
 
+### `query_slo_violations(slo_name: str) -> list[float]`
+
+Returns the timestamps of all buffered violations for the SLO, in arrival order,
+and consumes them. Arrival order usually matches timestamp order, but is not
+guaranteed to (e.g. on redelivery), since the timestamps come from EMS. Timestamps are Unix seconds; EMS sends milliseconds and they are
+converted. A message without a usable timestamp gets the time it was received.
+
+**Output:**
+
+```python
+[1792749239.512, 1792795789.558]
+```
+
+### `unsubscribe_slo(slo_name: str) -> None`
+
+Stops receiving violations for the SLO. Buffered timestamps that were not queried are discarded. The shared listener stops once no SLO or standard metric subscription remains.
+
 ### `unsubscribe_metric(metric: str, nodes: list[str] | None = None) -> None`
 
 Stops metric listeners or removes node-specific subscriptions, depending on the subscription mode.
@@ -536,7 +590,7 @@ Stops metric listeners or removes node-specific subscriptions, depending on the 
 **Output:** no return value.
 
 **Behavior summary:**
-- Standard metric + no `nodes`: stop the shared listener when the last standard metric is removed.
+- Standard metric + no `nodes`: remove the subscription and discard its unqueried sample; the shared listener stops once no standard metric or SLO subscription remains.
 - Standard metric + `nodes`: keep the listener running, but ignore future samples from those nodes.
 - Raw metric + no `nodes`: stop all raw listeners for that metric.
 - Raw metric + `nodes`: stop only the listed raw node/IP listeners and remove their cached data buckets.
@@ -549,6 +603,7 @@ Runnable examples are available under `examples/`:
 - `examples/undeploy.py`
 - `examples/subscribe_metric.py`
 - `examples/subscribe_metric_raw.py`
+- `examples/subscribe_slo.py`
 
 ## Simple Snippets
 
@@ -580,8 +635,18 @@ exit_code = undeploy_monitoring(
 ```python
 from swchmonclient import subscribe_metric
 
-thread_name = subscribe_metric("cpu_util_instance")
+thread_name = subscribe_metric("cpu_util_prct")
 print(thread_name)
+```
+
+### `subscribe_slo`
+
+```python
+from swchmonclient import query_slo_violations, subscribe_slo
+
+subscribe_slo("high_cpu")  # listens on /topic/high_cpu_CONSTRAINT
+for timestamp in query_slo_violations("high_cpu"):
+    print("violated at", timestamp)
 ```
 
 ### `subscribe_metric_raw`
@@ -589,7 +654,7 @@ print(thread_name)
 ```python
 from swchmonclient import subscribe_metric_raw
 
-METRIC_NAME = "cpu_util_prct"
+METRIC_NAME = "host_load_instance"
 NODES = ["10.0.0.1", "10.0.0.2"]
 
 # Option 1: Subscribe to the raw metric for specific nodes.
@@ -612,7 +677,7 @@ print(threads)
 ```python
 from swchmonclient import query_metric_values
 
-standard_values = query_metric_values("cpu_util_instance")
+standard_values = query_metric_values("cpu_util_prct")
 ```
 
 ### `query_metric_values_raw`
@@ -620,7 +685,7 @@ standard_values = query_metric_values("cpu_util_instance")
 ```python
 from swchmonclient import query_metric_values_raw
 
-raw_values = query_metric_values_raw("cpu_util_instance", seconds=60)
+raw_values = query_metric_values_raw("host_load_instance", seconds=60)
 ```
 
 ### `unsubscribe_metric`
@@ -628,6 +693,6 @@ raw_values = query_metric_values_raw("cpu_util_instance", seconds=60)
 ```python
 from swchmonclient import unsubscribe_metric
 
-unsubscribe_metric("cpu_util_instance")
-# or: unsubscribe_metric("cpu_util_instance", nodes=["10.0.0.1"])
+unsubscribe_metric("cpu_util_prct")
+# or, for a raw subscription: unsubscribe_metric("host_load_instance", nodes=["10.0.0.1"])
 ```
