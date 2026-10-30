@@ -840,7 +840,7 @@ spec:
           securityContext:
             {}
 #          image: "docker.io/ipatini/emsserver:latest"
-          image: "ghcr.io/imu-iccs/ems-server-swarmchestrate:1.1.0-snapshot"
+          image: "ghcr.io/imu-iccs/ems-server-swarmchestrate:1.0.0-snapshot"
           #imagePullPolicy: IfNotPresent
           imagePullPolicy: Always
           volumeMounts:
