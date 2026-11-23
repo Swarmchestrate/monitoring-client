@@ -977,13 +977,16 @@ spec:
               value: "ems-client-daemonset"
             - name: EMS_CLIENT_DAEMONSET_IMAGE_REPOSITORY
 #              value: "docker.io/ipatini/emsclient"
-              value: "ghcr.io/imu-iccs/ems-client"
+              value: "ghcr.io/imu-iccs/ems-client-swarmchestrate"
             - name: EMS_CLIENT_DAEMONSET_IMAGE_TAG
-              value: "latest"
+              value: "1.0.1-snapshot"
             - name: EMS_CLIENT_DAEMONSET_IMAGE_PULL_POLICY
               value: "Always"
             - name: EMS_CLIENT_ENV_BROKERCEP_AUTHENTICATION_ENABLED
               value: 'false'
+            # Disable adaptive filtering, so the EMS clients publish every collected sample
+            - name: EMS_CLIENT_ENV_SWARMCHESTRATE_ADAPTIVE_FILTER_ENABLE
+              value: "false"
             - name: EMS_CLIENT_KEYSTORE_SECRET
               value: ""
             - name: EMS_CLIENT_TRUSTSTORE_SECRET
